@@ -11,8 +11,8 @@ export function createGlobe(el, { onPlaceClick }) {
     .bumpImageUrl(TEX + "earth-topology.png")
     .backgroundImageUrl(TEX + "night-sky.png")
     .showAtmosphere(true)
-    .atmosphereColor("#7fb8ff")
-    .atmosphereAltitude(0.18)
+    .atmosphereColor("#8fb4e0")
+    .atmosphereAltitude(0.15)
     .htmlTransitionDuration(0)
     .htmlAltitude(0.01)
     .htmlElement(markerEl)
@@ -27,8 +27,15 @@ export function createGlobe(el, { onPlaceClick }) {
   controls.autoRotateSpeed = 0.35;
   controls.enableDamping = true;
   controls.minDistance = 112;   // globe radius is 100
-  controls.maxDistance = 700;
+  controls.maxDistance = 380;   // the starting view is fully zoomed out
   controls.zoomSpeed = 0.8;
+
+  // Scrolling: wheel zooms the globe, but once it is fully zoomed out (or the page is already
+  // scrolled) the wheel scrolls the page instead, pulling the travel log up over the globe.
+  el.addEventListener("wheel", (e) => {
+    const zoomedOut = controls.getDistance() >= controls.maxDistance - 0.5;
+    if (window.scrollY > 0 || (e.deltaY > 0 && zoomedOut)) e.stopPropagation();
+  }, { capture: true, passive: true });
 
   let idleTimer = null, spinAllowed = true;
   controls.addEventListener("start", () => { controls.autoRotate = false; clearTimeout(idleTimer); });
@@ -40,7 +47,7 @@ export function createGlobe(el, { onPlaceClick }) {
   const fit = () => globe.width(el.clientWidth).height(el.clientHeight);
   new ResizeObserver(fit).observe(el);
   fit();
-  globe.pointOfView({ lat: 25, lng: 10, altitude: 2.4 });
+  globe.pointOfView({ lat: 25, lng: 10, altitude: 2.8 });
 
   // ---- markers: re-cluster whenever the zoom level changes enough to matter ----
   let places = [], lastAlt = null, lastKeys = "", markersOn = true;

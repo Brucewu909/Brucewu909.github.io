@@ -4,7 +4,7 @@ import { readPhotos } from "./photos.js";
 import { Vault } from "./store.js";
 import { Player } from "./animate.js";
 import {
-  emptyData, addStay, removeVisit, placesOf, filterPresets, inRange, legsOf, MODES, formatRange, sortVisits,
+  emptyData, addStay, removeVisit, placesOf, filterPresets, inRange, legsOf, MODES, sortVisits,
 } from "./visits.js";
 
 const $ = (id) => document.getElementById(id);
@@ -12,8 +12,9 @@ const vault = new Vault();
 let data = emptyData();
 let presetId = "all";
 let customRange = null;
+let declinedSaving = false;   // "Not now" on the save prompt: keep this session in memory only
+let lockedSaved = false;      // a saved copy exists on this device but wasn't unlocked
 
-// ---------------------------------------------------------------- globe ----
 const globeApi = createGlobe($("globe"), { onPlaceClick: showPlace });
 const player = new Player(globeApi, $("overlay"));
 
@@ -35,64 +36,71 @@ function render() {
   renderVisits(visits);
   renderLegs(visits);
   renderUnplaced();
+  renderSettings();
 }
 
 function renderPresets() {
   const presets = filterPresets(data.visits);
   if (presetId !== "custom" && !presets.some((p) => p.id === presetId)) presetId = "all";
   const sel = $("filter-preset");
-  sel.replaceChildren(...presets.map((p) => new Option(p.month ? `  ${p.label}` : p.label, p.id)),
-    new Option("Custom range…", "custom"));
+  sel.replaceChildren(...presets.map((p) => new Option(p.month ? ` ${p.label}` : p.label, p.id)),
+    new Option("Custom range", "custom"));
   sel.value = presetId;
   $("filter-custom").hidden = presetId !== "custom";
 }
 
+const fmtDay = (iso, withYear = true) => new Date(iso + "T00:00:00")
+  .toLocaleDateString(undefined, { day: "numeric", month: "short", ...(withYear && { year: "numeric" }) });
+function when(v) {
+  if (v.start === v.end) return fmtDay(v.start);
+  const sameYear = v.start.slice(0, 4) === v.end.slice(0, 4);
+  return `${fmtDay(v.start, !sameYear)} – ${fmtDay(v.end)}`;
+}
+
 function renderVisits(visits) {
   const list = $("visit-list");
-  $("visit-count").textContent = visits.length ? `· ${visits.length}` : "";
+  $("visit-count").textContent = visits.length ? String(visits.length).padStart(2, "0") : "";
   if (!visits.length) {
-    list.replaceChildren(li("empty", data.visits.length ? "No places in this time range." : "No places yet. Upload photos or add a city."));
+    list.replaceChildren(el("li", "empty", data.visits.length
+      ? "Nothing in this period." : "No places yet. Use Add place to start."));
     return;
   }
   list.replaceChildren(...[...visits].reverse().map((v) => {
-    const item = document.createElement("li");
+    const item = el("li");
     item.dataset.city = v.cityId;
-    const name = document.createElement("span");
-    name.className = "name"; name.textContent = `${v.name}, ${countryName(v.cc)}`;
-    const meta = document.createElement("span");
-    meta.className = "meta";
-    meta.textContent = formatRange(v) + (v.photos ? ` · ${v.photos} photo${v.photos > 1 ? "s" : ""}` : "");
-    const rm = document.createElement("button");
-    rm.type = "button"; rm.className = "icon-btn remove"; rm.textContent = "✕";
-    rm.title = `Remove this visit to ${v.name}`;
+    const city = el("span", "city", v.name);
+    city.append(el("span", "country", countryName(v.cc)));
+    const extra = el("span", "extra", v.photos ? `${v.photos} photo${v.photos > 1 ? "s" : ""}` : "");
+    const rm = el("button", "remove", "Remove");
+    rm.type = "button";
+    rm.setAttribute("aria-label", `Remove this visit to ${v.name}`);
     rm.onclick = (e) => { e.stopPropagation(); removeVisit(data, v.id); changed(); };
-    item.onclick = () => globeApi.flyTo(v.lat, v.lng, 0.6);
-    item.append(name, rm, meta);
+    extra.append(rm);
+    item.onclick = () => { scrollTo({ top: 0 }); globeApi.flyTo(v.lat, v.lng, 0.7); };
+    item.append(el("span", "when", when(v)), city, extra);
     return item;
   }));
 }
 
 function renderLegs(visits) {
   const legs = legsOf(data, visits);
-  const list = $("leg-list");
   $("play").disabled = $("record").disabled = !legs.length || player.playing;
+  $("route-btn").disabled = !legs.length;
   if (!legs.length) {
-    list.replaceChildren(li("empty", "Add at least two places in this range to animate."));
+    $("leg-list").replaceChildren(el("li", "empty", "Add at least two places in this period."));
     return;
   }
-  list.replaceChildren(...legs.map((leg) => {
-    const item = document.createElement("li");
-    const label = document.createElement("span");
-    label.textContent = `${leg.from.name} → ${leg.to.name}`;
+  $("leg-list").replaceChildren(...legs.map((leg) => {
     const sel = document.createElement("select");
     sel.setAttribute("aria-label", `How you travelled from ${leg.from.name} to ${leg.to.name}`);
-    for (const [id, m] of Object.entries(MODES)) sel.add(new Option(`${m.icon} ${m.label}`, id));
+    for (const [id, m] of Object.entries(MODES)) sel.add(new Option(m.label, id));
     sel.value = leg.mode;
     sel.onchange = () => {
       if (sel.value === "flight") delete data.legModes[leg.key]; else data.legModes[leg.key] = sel.value;
       persist();
     };
-    item.append(label, sel);
+    const item = el("li", "", `${leg.from.name} → ${leg.to.name}`);
+    item.append(sel);
     return item;
   }));
 }
@@ -102,59 +110,78 @@ function renderUnplaced() {
   for (const u of data.unplaced) byDate.set(u.date, (byDate.get(u.date) || 0) + 1);
   $("unplaced").hidden = byDate.size === 0;
   $("unplaced-list").replaceChildren(...[...byDate].sort().map(([date, n]) => {
-    const item = document.createElement("li");
-    const t = document.createElement("span");
-    t.textContent = `${date} · ${n} photo${n > 1 ? "s" : ""}`;
-    const pick = document.createElement("button");
-    pick.type = "button"; pick.className = "icon-btn"; pick.textContent = "Choose city";
+    const item = el("li", date === assigningDate ? "active" : "", `${date} · ${n} photo${n > 1 ? "s" : ""}`);
+    const actions = el("span");
+    const pick = el("button", "", "Use");
+    pick.type = "button";
     pick.onclick = () => {
       assigningDate = date;
       $("city-from").value = $("city-to").value = date;
-      $("add-city").open = true;
       $("city-search").focus();
-      updateAddButton();
+      updateAddButton(); renderUnplaced();
     };
-    const drop = document.createElement("button");
-    drop.type = "button"; drop.className = "icon-btn"; drop.textContent = "✕";
-    drop.title = "Ignore these photos";
+    const drop = el("button", "", "  Ignore");
+    drop.type = "button";
     drop.onclick = () => { data.unplaced = data.unplaced.filter((u) => u.date !== date); changed(); };
-    const actions = document.createElement("span");
     actions.append(pick, drop);
-    item.append(t, actions);
+    item.append(actions);
     return item;
   }));
 }
 
-function li(cls, text) { const e = document.createElement("li"); e.className = cls; e.textContent = text; return e; }
+function renderSettings() {
+  $("set-pass").textContent = lockedSaved ? "Unlock saved places…" : "Save on this device…";
+  $("save-state").textContent = vault.enabled
+    ? "Saved on this device, encrypted with your passphrase."
+    : lockedSaved
+      ? "Your saved places are locked. Changes here aren't saved until you unlock them."
+    : declinedSaving && data.visits.length
+      ? "Not saved. These places disappear when you close the page."
+      : "Places are saved on this device, encrypted, once you add one.";
+  $("set-pass").hidden = vault.enabled || !(declinedSaving || lockedSaved);
+  $("wipe").hidden = !vault.enabled;
+}
+
+function el(tag, cls = "", text = "") {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text) e.textContent = text;
+  return e;
+}
 
 function showPlace(place) {
-  globeApi.flyTo(place.lat, place.lng, Math.min(globeApi.globe.pointOfView().altitude, 0.8));
-  const item = $("visit-list").querySelector(`[data-city="${place.id}"]`);
-  if (item) {
-    item.scrollIntoView({ behavior: "smooth", block: "center" });
-    item.animate([{ background: "rgba(255,209,102,.25)" }, { background: "transparent" }], { duration: 1400 });
-  }
+  globeApi.flyTo(place.lat, place.lng, Math.min(globeApi.globe.pointOfView().altitude, 0.9));
 }
 
 // ------------------------------------------------------------- saving ------
 let saveTimer = null;
 function persist() {
-  updateBadge();
+  renderSettings();
   if (!vault.enabled) return;
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => vault.save(data).catch((e) => alert(`Could not save: ${e.message}`)), 300);
 }
-function changed() { render(); persist(); }
-function updateBadge() {
-  const b = $("save-badge");
-  b.textContent = vault.enabled ? "Saved · encrypted" : "Not saved";
-  b.classList.toggle("saved", vault.enabled);
-  $("store-toggle").checked = vault.enabled;
+async function changed() {
+  render();
+  if (!vault.enabled && !declinedSaving && data.visits.length) await setUpSaving();
+  persist();
+}
+
+/** Encrypted saving is the default: the first time there is something to save, ask for a passphrase. */
+async function setUpSaving() {
+  const pass = await askPass({
+    title: "Keep your travels",
+    text: "Your places are saved only on this device, encrypted with a passphrase (8+ characters). You'll enter it when you open the page. It can't be recovered if forgotten.",
+    confirm: true,
+  });
+  if (pass) { await vault.enable(pass, data); declinedSaving = false; }
+  else declinedSaving = true;
+  render();
 }
 
 /**
  * Ask for a passphrase. `check(pass)` may throw to show an error and keep the dialog open.
- * Resolves with the passphrase, null on cancel, or "forget" if that link was used.
+ * Resolves with the passphrase, null on cancel, or "forget" if that button was used.
  */
 function askPass({ title, text, confirm = false, forget = false, check = async () => {} }) {
   const dlg = $("pass-dialog"), p1 = $("pass-1"), p2 = $("pass-2"), err = $("pass-error");
@@ -186,23 +213,25 @@ function askPass({ title, text, confirm = false, forget = false, check = async (
   });
 }
 
-$("store-toggle").onchange = async (e) => {
-  if (e.target.checked) {
-    // An earlier saved copy exists (unlock was skipped): open it rather than overwrite it.
-    if (await vault.hasSaved()) { await unlockSaved(); updateBadge(); render(); return; }
-    const pass = await askPass({
-      title: "Store on this device",
-      text: "Choose a passphrase (8+ characters). Your places are encrypted with it and kept only in this browser. You'll need it each time you open the page; it can't be recovered if you forget it.",
-      confirm: true,
-    });
-    if (pass) await vault.enable(pass, data);
-  } else if (confirm("Stop storing and delete the saved copy from this browser? Your places stay on screen until you close the page.")) {
-    await vault.disable();
+$("set-pass").onclick = async () => {
+  $("settings").hidePopover();
+  if (lockedSaved) {               // a saved copy exists but wasn't unlocked: open it, never overwrite it
+    if (await unlockSaved()) declinedSaving = false;
+    render(); return;
   }
-  updateBadge();
+  declinedSaving = false; await setUpSaving(); persist();
+};
+
+$("wipe").onclick = async () => {
+  $("settings").hidePopover();
+  if (!confirm("Delete the saved places from this device? This can't be undone. They stay on screen until you close the page.")) return;
+  await vault.disable();
+  declinedSaving = true;
+  render();
 };
 
 $("export").onclick = async () => {
+  $("settings").hidePopover();
   let pass = null;
   if (!vault.enabled) {
     pass = await askPass({ title: "Export backup", text: "Choose a passphrase to encrypt this backup file.", confirm: true });
@@ -214,6 +243,7 @@ $("export").onclick = async () => {
 };
 
 $("import").onchange = async (e) => {
+  $("settings").hidePopover();
   const file = e.target.files[0]; e.target.value = "";
   if (!file) return;
   let blob;
@@ -224,7 +254,7 @@ $("import").onchange = async (e) => {
     check: async (p) => { imported = await vault.importBlob(blob, p); },
   });
   if (!pass || !imported) return;
-  if (data.visits.length && !confirm("Replace the places on screen with the ones in this backup?")) return;
+  if (data.visits.length && !confirm("Replace your current places with the ones in this backup?")) return;
   data = { ...emptyData(), ...imported };
   sortVisits(data);
   changed();
@@ -238,24 +268,30 @@ function download(blob, name) {
 }
 
 // ------------------------------------------------------------- photos ------
+let statusTimer = null;
+function status(text, ms = 9000) {
+  $("photo-status").textContent = text;
+  clearTimeout(statusTimer);
+  if (ms) statusTimer = setTimeout(() => { $("photo-status").textContent = ""; }, ms);
+}
+
 async function addPhotos(files) {
   files = [...files].filter((f) => f.type.startsWith("image/") || /\.(heic|heif)$/i.test(f.name));
   if (!files.length) return;
-  const status = $("photo-status");
-  const { placed, unplaced, failed } = await readPhotos(files, (n, total) => { status.textContent = `Reading ${n} of ${total}…`; });
+  const { placed, unplaced, failed } = await readPhotos(files, (n, total) => status(`Reading ${n} / ${total}`, 0));
   let last = null;
   for (const p of placed) last = addStay(data, p.city, p.date, p.date, { source: "photo", photos: 1 });
   for (const u of unplaced) data.unplaced.push({ date: u.date });
-  const parts = [`${placed.length} photo${placed.length === 1 ? "" : "s"} placed`];
-  if (unplaced.length) parts.push(`${unplaced.length} without a location`);
-  if (failed) parts.push(`${failed} couldn't be read`);
-  if (placed.some((p) => p.approx) || unplaced.some((u) => u.approx)) parts.push("some dates are file dates, not capture dates");
-  status.textContent = parts.join(" · ") + ".";
-  changed();
+  const parts = [`${placed.length} placed`];
+  if (unplaced.length) parts.push(`${unplaced.length} without location (see Add place → Enter manually)`);
+  if (failed) parts.push(`${failed} unreadable`);
+  if (placed.some((p) => p.approx) || unplaced.some((u) => u.approx)) parts.push("some dates from file dates");
+  status(parts.join(" · "));
   if (last) globeApi.flyTo(last.lat, last.lng, 1.2);
+  await changed();
 }
 
-$("photo-input").onchange = (e) => { addPhotos(e.target.files); e.target.value = ""; };
+$("photo-input").onchange = (e) => { $("add-menu").hidePopover(); addPhotos(e.target.files); e.target.value = ""; };
 let dragDepth = 0;
 addEventListener("dragenter", (e) => { if (e.dataTransfer?.types.includes("Files")) { dragDepth++; $("drop-hint").hidden = false; } });
 addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; $("drop-hint").hidden = true; } });
@@ -265,28 +301,37 @@ addEventListener("drop", (e) => {
   if (e.dataTransfer?.files.length) addPhotos(e.dataTransfer.files);
 });
 
-// ----------------------------------------------------------- add a city ----
-let selectedCity = null, assigningDate = null, activeIndex = -1;
+// ------------------------------------------------------- manual add -------
+let selectedCity = null, assigningDate = null, activeIndex = -1, results = [];
 function updateAddButton() { $("city-add").disabled = !(selectedCity && $("city-from").value); }
+
+$("open-manual").onclick = () => {
+  $("add-menu").hidePopover();
+  $("manual-dialog").showModal();
+  $("city-search").focus();
+};
+$("manual-cancel").onclick = () => $("manual-dialog").close();
+$("manual-dialog").addEventListener("close", () => {
+  selectedCity = null; assigningDate = null; results = [];
+  $("city-search").value = ""; $("city-from").value = $("city-to").value = "";
+  $("city-results").replaceChildren();
+  updateAddButton(); renderUnplaced();
+});
+$("manual-form").onsubmit = (e) => e.preventDefault();
 
 $("city-search").oninput = () => {
   selectedCity = null; updateAddButton();
-  const results = searchCities($("city-search").value);
+  results = searchCities($("city-search").value, 6);
   activeIndex = -1;
-  $("city-results").replaceChildren(...results.map((c, i) => {
-    const item = document.createElement("li");
+  $("city-results").replaceChildren(...results.map((c) => {
+    const item = el("li", "", c.name);
     item.setAttribute("role", "option");
-    item.innerHTML = `<span></span> <small></small>`;
-    item.firstChild.textContent = c.name;
-    item.lastChild.textContent = countryName(c.cc);
+    item.append(el("small", "", countryName(c.cc)));
     item.onclick = () => pickCity(c);
-    item.dataset.i = i;
     return item;
   }));
-  $("city-results")._results = results;
 };
 $("city-search").onkeydown = (e) => {
-  const results = $("city-results")._results || [];
   if (!results.length) return;
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {
     e.preventDefault();
@@ -297,15 +342,18 @@ $("city-search").onkeydown = (e) => {
   }
 };
 function pickCity(c) {
-  selectedCity = c;
+  selectedCity = c; results = [];
   $("city-search").value = `${c.name}, ${countryName(c.cc)}`;
-  $("city-results").replaceChildren(); $("city-results")._results = [];
+  $("city-results").replaceChildren();
   if (!$("city-from").value) $("city-from").focus();
   updateAddButton();
 }
-$("city-from").oninput = () => { if (!$("city-to").value || $("city-to").value < $("city-from").value) $("city-to").value = $("city-from").value; updateAddButton(); };
+$("city-from").oninput = () => {
+  if (!$("city-to").value || $("city-to").value < $("city-from").value) $("city-to").value = $("city-from").value;
+  updateAddButton();
+};
 $("city-to").oninput = updateAddButton;
-$("city-add").onclick = () => {
+$("city-add").onclick = async () => {
   const from = $("city-from").value, to = $("city-to").value || from;
   let photos = 0;
   if (assigningDate && assigningDate >= from && assigningDate <= to) {
@@ -313,11 +361,9 @@ $("city-add").onclick = () => {
     data.unplaced = data.unplaced.filter((u) => u.date !== assigningDate);
   }
   const v = addStay(data, selectedCity, from, to, { source: photos ? "photo" : "manual", photos });
-  assigningDate = null; selectedCity = null;
-  $("city-search").value = ""; $("city-from").value = $("city-to").value = "";
-  updateAddButton();
-  changed();
+  $("manual-dialog").close();
   globeApi.flyTo(v.lat, v.lng, 1.2);
+  await changed();
 };
 
 // --------------------------------------------------------------- filter ----
@@ -342,17 +388,21 @@ for (const id of ["filter-from", "filter-to"]) {
 async function runAnimation(record) {
   const legs = legsOf(data, filtered());
   if (!legs.length) return;
-  for (const id of ["play", "record"]) $(id).disabled = true;
+  scrollTo({ top: 0 });
+  document.body.classList.add("playing");
+  for (const id of ["play", "record", "route-btn", "filter-preset"]) $(id).disabled = true;
   $("stop").hidden = false; $("clear-paths").hidden = true;
-  $("filter-preset").disabled = true;
+  $("play").hidden = $("record").hidden = true;
   try {
     const video = await player.play(legs, { title: rangeLabel(), record });
     if (video) download(video, `travels-${rangeLabel().replace(/[^\w-]+/g, "-")}.webm`);
   } catch (e) {
     alert(`The animation stopped: ${e.message}`);
   } finally {
+    document.body.classList.remove("playing");
     $("stop").hidden = true; $("clear-paths").hidden = false;
-    $("filter-preset").disabled = false;
+    $("play").hidden = $("record").hidden = false;
+    $("route-btn").disabled = $("filter-preset").disabled = false;
     render();
   }
 }
@@ -361,37 +411,43 @@ $("record").onclick = () => runAnimation(true);
 $("stop").onclick = () => player.stop();
 $("clear-paths").onclick = () => { player.clearPaths(); $("clear-paths").hidden = true; };
 
+$("log-handle").onclick = () => {
+  const top = $("log").offsetTop;
+  scrollTo({ top: scrollY < top / 2 ? top - 40 : 0 });
+};
+
 // ---------------------------------------------------------------- start ----
 async function start() {
   render();
   try {
     await fetchCities();
   } catch (e) {
-    $("photo-status").textContent = `City list failed to load (${e.message}). Serve this folder over http, not file://.`;
+    status(`City list failed to load (${e.message}). Open this page through a local web server.`, 0);
   }
   try {
     if (await vault.hasSaved()) await unlockSaved();
   } catch (e) {
     console.warn("Storage unavailable", e);
   }
-  updateBadge();
   render();
 }
 
-/** Open the encrypted copy saved in this browser. Places already on screen are merged in. */
+/** Open the encrypted copy saved on this device. Places already on screen are merged in. */
 async function unlockSaved() {
   let unlocked = null;
   const pass = await askPass({
     title: "Unlock your travels",
-    text: "Your places are stored encrypted in this browser. Enter your passphrase to open them.",
+    text: "Your places are saved on this device, encrypted. Enter your passphrase to open them.",
     forget: true,
     check: async (p) => { unlocked = await vault.unlock(p); },
   });
   if (pass === "forget") {
-    if (confirm("Delete the saved places from this browser? This can't be undone.")) await vault.disable();
+    if (confirm("Delete the saved places from this device? This can't be undone.")) { await vault.disable(); lockedSaved = false; }
+    else { lockedSaved = true; declinedSaving = true; }
     return false;
   }
-  if (!unlocked) return false;
+  if (!unlocked) { lockedSaved = true; declinedSaving = true; return false; }   // never overwrite a locked copy
+  lockedSaved = false;
   const onScreen = data;
   data = { ...emptyData(), ...unlocked };
   for (const v of onScreen.visits) addStay(data, { id: v.cityId, name: v.name, cc: v.cc, lat: v.lat, lng: v.lng }, v.start, v.end, { source: v.source, photos: v.photos });

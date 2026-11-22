@@ -146,7 +146,7 @@ export class Player {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, this.overlay.width, this.overlay.height);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.font = "600 13px system-ui, -apple-system, sans-serif";
+    ctx.font = '400 11px "Space Mono", monospace';
     ctx.textBaseline = "middle";
 
     // visited cities so far
@@ -155,9 +155,9 @@ export class Player {
       if (seen.has(c.cityId)) continue; seen.add(c.cityId);
       const s = globe.getScreenCoords(c.lat, c.lng, 0.01);
       if (!s || !this.facing(c.lat, c.lng)) continue;
-      ctx.fillStyle = "#ffd166";
+      ctx.fillStyle = "#f0c38e";
       ctx.beginPath(); ctx.arc(s.x, s.y, 4, 0, Math.PI * 2); ctx.fill();
-      ctx.lineWidth = 3; ctx.strokeStyle = "rgba(0,0,0,.65)"; ctx.fillStyle = "#fff";
+      ctx.lineWidth = 3; ctx.strokeStyle = "rgba(3,5,10,.75)"; ctx.fillStyle = "#e8e4dc";
       ctx.strokeText(c.name, s.x + 8, s.y); ctx.fillText(c.name, s.x + 8, s.y);
     }
 
@@ -186,21 +186,28 @@ export class Player {
           ctx.rotate(Math.atan2(s2.y - s.y, s2.x - s.x));
           drawPlane(ctx);
         } else {
-          ctx.font = "20px system-ui, sans-serif"; ctx.textAlign = "center";
-          ctx.fillText(MODES[mode].icon, 0, 0);
+          // ground travel: a ringed marker in the mode's colour
+          ctx.fillStyle = "#03050a"; ctx.strokeStyle = MODES[mode].color; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(0, 0, 6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+          ctx.fillStyle = MODES[mode].color;
+          ctx.beginPath(); ctx.arc(0, 0, 2.5, 0, Math.PI * 2); ctx.fill();
         }
         ctx.restore();
       }
     }
 
-    // captions
+    // captions, bottom left (clear of the page's top bar)
+    const H = this.overlay.height / dpr;
     ctx.textAlign = "left";
-    ctx.font = "700 22px system-ui, -apple-system, sans-serif";
-    ctx.lineWidth = 4; ctx.strokeStyle = "rgba(0,0,0,.6)"; ctx.fillStyle = "#fff";
-    if (title) { ctx.strokeText(title, 20, 32); ctx.fillText(title, 20, 32); }
+    ctx.lineWidth = 4; ctx.strokeStyle = "rgba(3,5,10,.6)"; ctx.fillStyle = "#e8e4dc";
+    if (title) {
+      ctx.font = '500 13px "Space Grotesk", sans-serif';
+      const t = title.toUpperCase().split("").join(" ");
+      ctx.strokeText(t, 24, H - 58); ctx.fillText(t, 24, H - 58);
+    }
     if (this.caption) {
-      ctx.font = "600 16px system-ui, -apple-system, sans-serif";
-      ctx.strokeText(this.caption, 20, 60); ctx.fillText(this.caption, 20, 60);
+      ctx.font = '400 20px "Space Grotesk", sans-serif';
+      ctx.strokeText(this.caption, 24, H - 32); ctx.fillText(this.caption, 24, H - 32);
     }
   }
 
@@ -215,7 +222,7 @@ export class Player {
 
 function drawPlane(ctx) {
   // simple top-down airliner pointing along +x
-  ctx.fillStyle = "#fff"; ctx.strokeStyle = "rgba(0,0,0,.6)"; ctx.lineWidth = 1.2;
+  ctx.fillStyle = "#e8e4dc"; ctx.strokeStyle = "rgba(3,5,10,.7)"; ctx.lineWidth = 1.2;
   ctx.beginPath();
   ctx.moveTo(13, 0); ctx.lineTo(9, -1.8); ctx.lineTo(2, -2); ctx.lineTo(-3, -11); ctx.lineTo(-6, -11);
   ctx.lineTo(-3, -2); ctx.lineTo(-9, -2); ctx.lineTo(-12, -6); ctx.lineTo(-14, -6); ctx.lineTo(-12, 0);

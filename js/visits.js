@@ -95,10 +95,10 @@ export const inRange = (v, range) => !range || (v.start <= range.to && v.end >= 
 // ---- legs between consecutive visits (for the animation) ------------------------
 
 export const MODES = {
-  flight: { label: "Flight", color: "#ffd166", icon: "✈" },
-  train:  { label: "Train",  color: "#06d6a0", icon: "🚆" },
-  car:    { label: "Car",    color: "#ef476f", icon: "🚗" },
-  boat:   { label: "Boat",   color: "#4cc9f0", icon: "⛴" },
+  flight: { label: "Flight", color: "#f0c38e" },
+  train:  { label: "Train",  color: "#8fd3b6" },
+  car:    { label: "Car",    color: "#e8836f" },
+  boat:   { label: "Boat",   color: "#8fb4e0" },
 };
 
 export function legsOf(data, visits) {

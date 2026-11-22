@@ -1,9 +1,10 @@
 // Trip animation: a plane (or train, car, boat) travels city to city along great-circle paths,
 // with the camera following. Optionally recorded to a .webm video of the globe + overlay.
-import { slerp, angle } from "./geo.js";
+import { slerp, angle, toVec, fromVec } from "./geo.js";
 import { MODES } from "./visits.js";
 
 const PATH_STEPS = 72;
+const PLAY_TILE_LEVEL = 3;
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 
 function legPath(leg) {
@@ -46,11 +47,18 @@ export class Player {
     this.playing = true; this.cancelled = false;
     const { globe } = this.g;
     const el = globe.renderer().domElement;
+    const controls = globe.controls();
+    const damping = controls.enableDamping;
+    controls.enableDamping = false;   // leftover drag momentum would fight the scripted camera
+    controls.enabled = false;
+    // The camera stays high while playing, so cap tile detail: fewer tile loads = no stutter.
+    globe.globeTileEngineMaxLevel(PLAY_TILE_LEVEL);
     this.g.setSpin(false);
     this.g.showMarkers(false);
 
     const plans = legs.map((l) => ({ ...l, ...legPath(l) }));
     const done = [];        // finished path objects shown on the globe
+    globe.pathsData([]);    // clear routes from an earlier playback before the camera starts moving
     const cities = [plans[0].from];
 
     // recording: composite the WebGL canvas and the overlay into one canvas each frame
@@ -66,8 +74,25 @@ export class Player {
       recorder.start(250);
     }
 
+    // One continuous camera: each frame it eases toward a target (exponential smoothing on the
+    // sphere), so changes of leg, altitude or framing glide instead of jumping.
+    const pov0 = globe.pointOfView();
+    const cam = { v: toVec(pov0.lat, pov0.lng), alt: pov0.altitude };
+    let target = { lat: pov0.lat, lng: pov0.lng, alt: pov0.altitude }, tau = 0.6, lastT = performance.now();
+    const steer = (now) => {
+      const dt = Math.min(0.1, Math.max(0, (now - lastT) / 1000)); lastT = now;
+      const a = 1 - Math.exp(-dt / tau);
+      const tv = toVec(target.lat, target.lng);
+      cam.v = cam.v.map((c, i) => c + (tv[i] - c) * a);
+      cam.alt += (target.alt - cam.alt) * a;
+      const p = fromVec(cam.v);
+      globe.pointOfView({ lat: p.lat, lng: p.lng, altitude: cam.alt }, 0);
+    };
+    const legAlt = (leg) => Math.min(2.2, Math.max(0.9, leg.w * 1.4));
+
     const frame = (draw) => new Promise((resolve) => requestAnimationFrame((now) => {
       draw(now);
+      steer(now);
       // render the globe now so the WebGL frame matches the overlay drawn for this camera
       globe.renderer().render(globe.scene(), globe.camera());
       this.drawOverlay(cities, title);
@@ -79,14 +104,19 @@ export class Player {
 
     try {
       const first = plans[0].from;
-      globe.pointOfView({ lat: first.lat, lng: first.lng, altitude: 1.6 }, 1200);
+      target = { lat: first.lat, lng: first.lng, alt: legAlt(plans[0]) };
+      tau = 0.55;
       this.caption = `${first.name}`;
-      await hold(1500);
+      await hold(2200);
+      tau = 0.4;
 
       for (const leg of plans) {
         if (this.cancelled) break;
         const color = MODES[leg.mode]?.color || "#fff";
-        const camAlt = Math.min(2.2, Math.max(0.9, leg.w * 1.4));
+        const camAlt = legAlt(leg);
+        // look from a little to one side of the route (fixed per leg) so long arcs read as curves
+        const mid = slerp(leg.from, leg.to, 0.5);
+        const sideSign = mid.lat > 50 ? 1 : -1;
         this.caption = `${leg.from.name} → ${leg.to.name}`;
         const t0 = performance.now();
         let e = 0;
@@ -98,18 +128,17 @@ export class Player {
             const n = Math.max(1, Math.floor(k * PATH_STEPS) + 1);
             this.trail = { points: [...leg.points.slice(0, n), along(leg.points, k)], color };
             const pos = along(leg.points, k);
-            const cam = slerp(leg.from, leg.to, k);
-            // look from a little to the side of the route so a long arc reads as a curve, not a line
-            const side = Math.min(14, leg.w * 15) * Math.sin(Math.PI * k);
-            const camLat = cam.lat > 50 ? cam.lat + side : cam.lat - side;
-            globe.pointOfView({ lat: Math.max(-80, Math.min(80, camLat)), lng: cam.lng,
-                                altitude: camAlt + 0.25 * Math.sin(Math.PI * k) }, 0);
+            const c = slerp(leg.from, leg.to, k);
+            const side = sideSign * Math.min(10, leg.w * 12) * Math.sin(Math.PI * k);
+            target = { lat: Math.max(-80, Math.min(80, c.lat + side)), lng: c.lng,
+                       alt: camAlt + 0.2 * Math.sin(Math.PI * k) };
             const ahead = along(leg.points, Math.min(1, k + 0.02));
             this.vehicle = { pos, ahead, mode: leg.mode };
           });
         }
+        // finished legs stay on the overlay while playing (rebuilding globe geometry mid-flight stutters)
         done.push({ points: leg.points.map((p) => [...p]), color });
-        globe.pathsData([...done]);
+        this.finished = done;
         this.vehicle = null; this.trail = null;
         cities.push(leg.to);
         this.caption = leg.to.name;
@@ -117,6 +146,11 @@ export class Player {
       }
       await hold(800);
     } finally {
+      this.finished = null;
+      globe.pathsData(done);   // hand the routes to the globe once playback is over
+      controls.enabled = true;
+      controls.enableDamping = damping;
+      globe.globeTileEngineMaxLevel(this.g.maxTileLevel);
       this.vehicle = null; this.trail = null; this.caption = "";
       this.clearOverlay();
       if (recorder) await new Promise((r) => { recorder.onstop = r; recorder.stop(); });
@@ -162,12 +196,12 @@ export class Player {
       ctx.strokeText(c.name, s.x + 8, s.y); ctx.fillText(c.name, s.x + 8, s.y);
     }
 
-    // the leg in progress
-    if (this.trail) {
-      ctx.strokeStyle = this.trail.color; ctx.lineWidth = 2.2; ctx.lineJoin = ctx.lineCap = "round";
+    // routes: finished legs, then the leg in progress
+    for (const route of [...(this.finished || []), ...(this.trail ? [this.trail] : [])]) {
+      ctx.strokeStyle = route.color; ctx.lineWidth = 2; ctx.lineJoin = ctx.lineCap = "round";
       ctx.beginPath();
       let pen = false;
-      for (const [la, ln, alt] of this.trail.points) {
+      for (const [la, ln, alt] of route.points) {
         const s = this.facing(la, ln, alt) && globe.getScreenCoords(la, ln, alt);
         if (!s) { pen = false; continue; }
         if (pen) ctx.lineTo(s.x, s.y); else ctx.moveTo(s.x, s.y);

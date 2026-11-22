@@ -6,6 +6,7 @@ const TEX = "https://cdn.jsdelivr.net/npm/three-globe@2.45.6/example/img/";
 // Esri World Imagery: satellite tiles that load in at higher detail as you zoom in.
 const TILE = (x, y, level) =>
   `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${level}/${y}/${x}`;
+const MAX_TILE_LEVEL = 18;
 const IDLE_RESUME_MS = 5000;
 const SPIN_FEEL = 0.6;   // drag-to-spin speed relative to globe.gl's default
 const ZOOM_FEEL = 1.8;   // wheel/pinch zoom speed relative to globe.gl's default
@@ -13,7 +14,7 @@ const ZOOM_FEEL = 1.8;   // wheel/pinch zoom speed relative to globe.gl's defaul
 export function createGlobe(el, { onPlaceClick }) {
   const globe = new Globe(el, { rendererConfig: { preserveDrawingBuffer: true, antialias: true } })
     .globeTileEngineUrl(TILE)
-    .globeTileEngineMaxLevel(18)
+    .globeTileEngineMaxLevel(MAX_TILE_LEVEL)
     .backgroundImageUrl(TEX + "night-sky.png")
     .showAtmosphere(true)
     .atmosphereColor("#8fb4e0")
@@ -101,6 +102,7 @@ export function createGlobe(el, { onPlaceClick }) {
 
   return {
     globe,
+    maxTileLevel: MAX_TILE_LEVEL,
     setPlaces(next) { places = next; render(true); },
     showMarkers(on) { markersOn = on; render(true); },
     setSpin(on) { spinAllowed = on; controls.autoRotate = on; clearTimeout(idleTimer); },

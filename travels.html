@@ -4,19 +4,112 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://cdn.jsdelivr.net; connect-src 'self' https://cdn.jsdelivr.net; worker-src 'self' blob:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Travels</title>
-  <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="travels.css">
 </head>
-<body class="travels">
-  <main>
+<body>
+  <div id="stage">
+    <div id="globe"></div>
+    <canvas id="overlay"></canvas>
+    <div id="drop-hint" hidden>Drop photos to add places</div>
+  </div>
+
+  <aside id="panel">
     <header>
       <h1>Travels</h1>
-      <p>Places I've been and what I did there.</p>
+      <span id="save-badge" class="badge">Not saved</span>
     </header>
-    <section id="trip-list" aria-live="polite"></section>
-  </main>
-  <script src="travels-data.js"></script>
-  <script src="travels.js"></script>
+
+    <section>
+      <h2>Add places</h2>
+      <label class="button primary">
+        Upload photos
+        <input id="photo-input" type="file" accept="image/*,.heic,.heif" multiple hidden>
+      </label>
+      <p class="hint">Reads each photo's location and date, matches it to the nearest city, then forgets the photo. You can also drop photos on the globe.</p>
+      <p id="photo-status" class="status" aria-live="polite"></p>
+
+      <details id="add-city">
+        <summary>Add a city by hand</summary>
+        <div class="field">
+          <input id="city-search" type="search" placeholder="Search cities…" autocomplete="off" aria-label="City">
+          <ul id="city-results" role="listbox"></ul>
+        </div>
+        <div class="row">
+          <label>From <input id="city-from" type="date"></label>
+          <label>To <input id="city-to" type="date"></label>
+        </div>
+        <button id="city-add" type="button" class="button" disabled>Add</button>
+      </details>
+
+      <div id="unplaced" hidden>
+        <h3>Photos without a location</h3>
+        <p class="hint">Pick a date, then choose its city above.</p>
+        <ul id="unplaced-list"></ul>
+      </div>
+    </section>
+
+    <section>
+      <h2>Time range</h2>
+      <select id="filter-preset" aria-label="Time range"></select>
+      <div id="filter-custom" class="row" hidden>
+        <label>From <input id="filter-from" type="date"></label>
+        <label>To <input id="filter-to" type="date"></label>
+      </div>
+    </section>
+
+    <section>
+      <h2>Places <span id="visit-count" class="count"></span></h2>
+      <ul id="visit-list"></ul>
+    </section>
+
+    <section>
+      <h2>Trip animation</h2>
+      <p class="hint">Travels between the places in the selected range, in date order. Change how you got between two cities below.</p>
+      <ul id="leg-list"></ul>
+      <div class="row">
+        <button id="play" type="button" class="button primary">Play</button>
+        <button id="record" type="button" class="button">Save video</button>
+        <button id="stop" type="button" class="button" hidden>Stop</button>
+        <button id="clear-paths" type="button" class="button" hidden>Clear routes</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Privacy &amp; data</h2>
+      <label class="toggle">
+        <input id="store-toggle" type="checkbox">
+        Store on this device (encrypted)
+      </label>
+      <p class="hint">Off: nothing is saved, and everything is gone when you close or reload the page. On: your places are encrypted with your passphrase and kept only in this browser. Nothing is ever uploaded.</p>
+      <div class="row">
+        <button id="export" type="button" class="button">Export backup</button>
+        <label class="button">Import backup<input id="import" type="file" accept=".json,application/json" hidden></label>
+      </div>
+    </section>
+
+    <footer>City data © <a href="https://www.geonames.org/" rel="noreferrer">GeoNames</a> (CC BY 4.0). Earth imagery: NASA Blue Marble.</footer>
+  </aside>
+
+  <dialog id="pass-dialog">
+    <form method="dialog">
+      <h2 id="pass-title">Passphrase</h2>
+      <p id="pass-text" class="hint"></p>
+      <input id="pass-1" type="password" autocomplete="new-password" placeholder="Passphrase" required minlength="8">
+      <input id="pass-2" type="password" autocomplete="new-password" placeholder="Repeat passphrase" minlength="8">
+      <p id="pass-error" class="error" aria-live="polite"></p>
+      <div class="row end">
+        <button value="cancel" type="button" class="button" id="pass-cancel">Cancel</button>
+        <button value="ok" class="button primary" id="pass-ok">OK</button>
+      </div>
+      <button type="button" id="pass-forget" class="link" hidden>Forget the saved data instead</button>
+    </form>
+  </dialog>
+
+  <script src="https://cdn.jsdelivr.net/npm/globe.gl@2.46.2/dist/globe.gl.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/full.umd.js"></script>
+  <script type="module" src="js/app.js"></script>
 </body>
 </html>

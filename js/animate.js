@@ -6,13 +6,21 @@ import { MODES } from "./visits.js";
 import { makeVehicle, THREE } from "./models.js";
 
 const FLIGHT_STEPS = 72;
-// Camera framing. Short legs (e.g. within Europe) are followed closely at one steady height;
-// long legs pull back; the trip ends on a view of every place visited.
+// Camera framing per travel mode: distance from the vehicle (globe radii) and tilt away from
+// looking straight down (degrees). Ground travel is close and tilted so the models read as 3D;
+// flights sit further back. Long legs pull back further; the trip ends on an overview.
 const SHORT_KM = 1500;
-const FOLLOW_ALT = 0.35;                       // globe radii above the surface
-const longAlt = (w) => Math.min(2.0, Math.max(0.8, 0.6 + w * 1.1));
+const VIEW = {
+  car:    { dist: 0.09, tilt: 45 },
+  train:  { dist: 0.12, tilt: 45 },
+  boat:   { dist: 0.13, tilt: 45 },
+  flight: { dist: 0.32, tilt: 28 },
+};
+const longFlightDist = (w) => Math.min(2.0, Math.max(0.8, 0.6 + w * 1.1));
+// Travel time on screen: seconds = base + km / (km per second), capped. Car ≈ boat < train < plane.
+const SPEED = { car: [2, 200, 11], boat: [2, 230, 12], train: [1.8, 360, 9], flight: [1.6, 2500, 7] };
 // Tile detail while playing: enough for the close follow view, capped to avoid load stutter.
-const PLAY_TILE_LEVEL_CLOSE = 4, PLAY_TILE_LEVEL_FAR = 3;
+const PLAY_TILE_LEVEL_CLOSE = 6, PLAY_TILE_LEVEL_FAR = 3;
 // On-screen length of each vehicle model, in CSS pixels, whatever the zoom.
 const VEHICLE_PX = { flight: 56, car: 34, train: 72, boat: 54 };
 const GROUND_ALT = 0.0005;                     // ground routes sit on the surface
@@ -42,6 +50,65 @@ function resample(route, n, alt) {
   return { points: out, km: total };
 }
 
+// ---- route smoothing: keep the general line of a road/railway, not every bend -------------
+
+/** Make longitudes continuous (no ±360° jumps across the antimeridian). */
+function unwrap(route) {
+  const out = [[route[0][0], route[0][1]]];
+  for (let i = 1; i < route.length; i++) {
+    let lng = route[i][1];
+    const prev = out[i - 1][1];
+    while (lng - prev > 180) lng -= 360;
+    while (lng - prev < -180) lng += 360;
+    out.push([route[i][0], lng]);
+  }
+  return out;
+}
+
+/** Douglas–Peucker simplification with a tolerance in km. */
+function simplify(pts, tolKm) {
+  if (pts.length < 3) return pts;
+  const keep = new Uint8Array(pts.length); keep[0] = keep[pts.length - 1] = 1;
+  const stack = [[0, pts.length - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop();
+    const k = Math.cos(((pts[a][0] + pts[b][0]) / 2) * Math.PI / 180) * 111.32;
+    const ax = pts[a][1] * k, ay = pts[a][0] * 110.57, bx = pts[b][1] * k, by = pts[b][0] * 110.57;
+    const dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy || 1e-9;
+    let worst = -1, worstD = tolKm;
+    for (let i = a + 1; i < b; i++) {
+      const px = pts[i][1] * k, py = pts[i][0] * 110.57;
+      const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
+      const d = Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+      if (d > worstD) { worstD = d; worst = i; }
+    }
+    if (worst > 0) { keep[worst] = 1; stack.push([a, worst], [worst, b]); }
+  }
+  return pts.filter((_, i) => keep[i]);
+}
+
+/** Chaikin corner cutting: rounds the remaining corners into gentle curves. */
+function chaikin(pts, iterations = 3) {
+  for (let n = 0; n < iterations; n++) {
+    const out = [pts[0]];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [a, b] = [pts[i], pts[i + 1]];
+      out.push([a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25], [a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]);
+    }
+    out.push(pts[pts.length - 1]);
+    pts = out;
+  }
+  return pts;
+}
+
+function smoothRoute(route) {
+  const pts = unwrap(route);
+  let km = 0;
+  for (let i = 1; i < pts.length; i++) km += distanceKm(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1]);
+  const tol = Math.min(25, Math.max(1.5, km / 250));
+  return chaikin(simplify(pts, tol)).map(([lat, lng]) => [lat, ((lng + 540) % 360) - 180]);
+}
+
 function legPath(leg) {
   const a = leg.from, b = leg.to;
   const w = angle(a.lat, a.lng, b.lat, b.lng);
@@ -56,10 +123,18 @@ function legPath(leg) {
       points.push([p.lat, p.lng, leg.mode === "flight" ? peak * Math.sin(Math.PI * t) : peak]);
     }
   } else {
-    const r = resample(leg.route, Math.min(700, Math.max(80, Math.round(leg.route.length * 1.5))), GROUND_ALT);
+    const r = resample(smoothRoute(leg.route), 500, GROUND_ALT);
     points = r.points; km = r.km;
   }
-  return { points, w, short: w * 6371 <= SHORT_KM, duration: Math.min(7, Math.max(2.4, 1.6 + km / 2500)) * 1000 };
+  const [base, kmPerSec, cap] = SPEED[leg.mode] || SPEED.flight;
+  const short = w * 6371 <= SHORT_KM;
+  const view = VIEW[leg.mode] || VIEW.flight;
+  // how far back the camera sits: per mode, further for long legs so the motion stays readable
+  const dist = leg.mode === "flight"
+    ? (short ? view.dist : longFlightDist(w))
+    : Math.max(view.dist, Math.min(1.2, km / 20000));
+  const tilt = leg.mode === "flight" && !short ? 15 : view.tilt;
+  return { points, w, km, short, dist, tilt, duration: Math.min(cap, base + km / kmPerSec) * 1000 };
 }
 
 /** Point at fraction t along a polyline of [lat, lng, alt] samples. */
@@ -119,28 +194,51 @@ export class Player {
       recorder.start(250);
     }
 
-    // One continuous camera: each frame it eases toward a target (exponential smoothing on the
-    // sphere), so changes of leg, altitude or framing glide instead of jumping.
+    // One continuous chase camera. Each frame it eases toward a target: the point it looks at,
+    // its distance, its tilt and its heading (it sits behind the vehicle, looking ahead).
+    // globe.gl's own loop is paused meanwhile so it can't re-aim the camera at the globe's centre.
+    globe.pauseAnimation();
+    const camera = globe.camera();
     const pov0 = globe.pointOfView();
-    const cam = { v: toVec(pov0.lat, pov0.lng), alt: pov0.altitude };
-    let target = { lat: pov0.lat, lng: pov0.lng, alt: pov0.altitude }, lastT = performance.now();
-    let tauPos = 0.6;          // how tightly the camera tracks its target position (s)
-    const tauAlt = 0.9;        // height always changes gently
+    const vec = (o) => [o.x, o.y, o.z];
+    const northAt = (n) => { const pole = norm(vec(globe.getCoords(90, 0, 0)));
+      const d = dot(pole, n); return norm([pole[0] - n[0] * d, pole[1] - n[1] * d, pole[2] - n[2] * d]); };
+    const cam = { v: toVec(pov0.lat, pov0.lng), alt: pov0.altitude, tilt: 0,
+                  h: northAt(norm(vec(globe.getCoords(pov0.lat, pov0.lng, 0)))) };
+    let target = { lat: pov0.lat, lng: pov0.lng, alt: pov0.altitude, tilt: 0, h: null }, lastT = performance.now();
+    let tauPos = 0.6;          // how tightly the camera tracks its target point (s)
+    const tauAlt = 0.9, tauTilt = 1.0, tauHeading = 1.1;   // framing always changes gently
     const steer = (now) => {
       const dt = Math.min(0.1, Math.max(0, (now - lastT) / 1000)); lastT = now;
-      const a = 1 - Math.exp(-dt / tauPos), b = 1 - Math.exp(-dt / tauAlt);
+      const k = (tau) => 1 - Math.exp(-dt / tau);
       const tv = toVec(target.lat, target.lng);
-      cam.v = cam.v.map((c, i) => c + (tv[i] - c) * a);
-      cam.alt += (target.alt - cam.alt) * b;
-      const p = fromVec(cam.v);
-      globe.pointOfView({ lat: p.lat, lng: p.lng, altitude: cam.alt }, 0);
+      cam.v = cam.v.map((c, i) => c + (tv[i] - c) * k(tauPos));
+      cam.alt += (target.alt - cam.alt) * k(tauAlt);
+      cam.tilt += (target.tilt - cam.tilt) * k(tauTilt);
+      const c = fromVec(cam.v);
+      // tell globe.gl (tile loading) where we're looking, then place the tilted camera ourselves
+      globe.pointOfView({ lat: c.lat, lng: c.lng, altitude: cam.alt }, 0);
+      const T = vec(globe.getCoords(c.lat, c.lng, 0)), R = Math.hypot(...T), n = T.map((x) => x / R);
+      const wantH = target.h || northAt(n);
+      let h = cam.h.map((x, i) => x + (wantH[i] - x) * k(tauHeading));
+      const hn = dot(h, n);
+      h = norm([h[0] - n[0] * hn, h[1] - n[1] * hn, h[2] - n[2] * hn]);
+      cam.h = h;
+      const t = cam.tilt * Math.PI / 180, D = cam.alt * R;
+      const dir = n.map((x, i) => x * Math.cos(t) - h[i] * Math.sin(t));
+      camera.position.set(T[0] + dir[0] * D, T[1] + dir[1] * D, T[2] + dir[2] * D);
+      camera.up.set(...n.map((x, i) => x * Math.sin(t) + h[i] * Math.cos(t)));
+      camera.lookAt(T[0], T[1], T[2]);
+      camera.updateMatrixWorld();
+      this.g.drawSky();
     };
-    const legAlt = (leg) => (leg.short ? FOLLOW_ALT : longAlt(leg.w));
 
     const frame = (draw) => new Promise((resolve) => requestAnimationFrame((now) => {
       draw(now);
-      steer(now);
       this.placeVehicle(now);
+      if (this.heading) target.h = this.heading;     // the camera settles in behind the vehicle
+      steer(now);
+      this.sizeVehicle();                            // keep its on-screen size at the new camera distance
       // render the globe now so the WebGL frame matches the overlay drawn for this camera
       globe.renderer().render(globe.scene(), globe.camera());
       this.drawOverlay(cities, title);
@@ -156,7 +254,13 @@ export class Player {
 
     try {
       const first = plans[0].from;
-      target = { lat: first.lat, lng: first.lng, alt: legAlt(plans[0]) };
+      // start already facing along the first leg
+      const p0 = plans[0].points, i1 = Math.min(p0.length - 1, Math.ceil(p0.length * 0.05));
+      const A0 = vec(globe.getCoords(p0[0][0], p0[0][1], 0)), A1 = vec(globe.getCoords(p0[i1][0], p0[i1][1], 0));
+      const n0 = norm(A0), f0 = A1.map((x, i) => x - A0[i]), d0 = dot(f0, n0);
+      target = { lat: first.lat, lng: first.lng, alt: plans[0].dist, tilt: plans[0].tilt,
+                 h: norm(f0.map((x, i) => x - n0[i] * d0)) };
+      this.heading = null; this.fwdSmooth = null;
       tauPos = 0.55;
       this.marks = new Map();
       this.arrive(first, performance.now());
@@ -166,11 +270,10 @@ export class Player {
       for (const leg of plans) {
         if (this.cancelled) break;
         const color = MODES[leg.mode]?.color || "#fff";
-        const camAlt = legAlt(leg);
-        tauPos = leg.short ? 0.3 : 0.5;
-        // long flights: look from a little to one side (fixed per leg) so the arc reads as a curve
-        const mid = slerp(leg.from, leg.to, 0.5);
-        const sideSign = mid.lat > 50 ? 1 : -1;
+        tauPos = leg.mode === "flight" && !leg.short ? 0.5 : 0.25;
+        // look a little way down the road when turning, so the vehicle doesn't twitch at every bend
+        const lookAhead = Math.max(0.002, Math.min(0.05, 15 / Math.max(leg.km, 1)));
+        this.fwdSmooth = null;
         this.caption = `${leg.from.name} → ${leg.to.name}`;
         const t0 = performance.now();
         let e = 0;
@@ -181,16 +284,9 @@ export class Player {
             const n = Math.max(1, Math.floor(k * (leg.points.length - 1)) + 1);
             this.trail = { points: [...leg.points.slice(0, n), along(leg.points, k)], color };
             const pos = along(leg.points, k);
-            if (leg.short || leg.mode !== "flight") {
-              // follow the vehicle itself (ground routes bend, so the straight midpoint is no use)
-              target = { lat: pos[0], lng: pos[1], alt: camAlt };
-            } else {
-              const c = slerp(leg.from, leg.to, k);
-              const side = sideSign * Math.min(10, leg.w * 12) * Math.sin(Math.PI * k);
-              target = { lat: Math.max(-80, Math.min(80, c.lat + side)), lng: c.lng, alt: camAlt };
-            }
-            const ahead = along(leg.points, Math.min(1, k + 0.004));
-            const behind = along(leg.points, Math.max(0, k - 0.004));
+            target = { ...target, lat: pos[0], lng: pos[1], alt: leg.dist, tilt: leg.tilt };
+            const ahead = along(leg.points, Math.min(1, k + lookAhead));
+            const behind = along(leg.points, Math.max(0, k - lookAhead));
             // the vehicle grows out of the departure marker
             this.vehicle = { pos, ahead, behind, mode: leg.mode, scale: easeOut(clamp01((now - t0) / TAKEOFF_MS)) };
           });
@@ -210,12 +306,18 @@ export class Player {
         const stops = [plans[0].from, ...plans.map((p) => p.to)];
         const c = centroid(stops);
         const spread = Math.max(...stops.map((p) => angle(c.lat, c.lng, p.lat, p.lng)));
-        target = { lat: c.lat, lng: c.lng, alt: Math.min(2.6, Math.max(0.5, 0.35 + spread * 2.4)) };
+        target = { lat: c.lat, lng: c.lng, alt: Math.min(2.6, Math.max(0.5, 0.35 + spread * 2.4)), tilt: 0, h: null };
+        this.heading = null;   // level out and turn north-up again before handing back to globe.gl
         tauPos = 0.9;
         this.caption = "";
         await hold(3200);
       }
     } finally {
+      // hand the camera back to globe.gl: north-up, looking at the globe's centre
+      const c = fromVec(cam.v);
+      camera.up.set(0, 1, 0);
+      globe.pointOfView({ lat: c.lat, lng: c.lng, altitude: Math.max(cam.alt, 0.2) }, 0);
+      globe.resumeAnimation();
       controls.enabled = true;
       controls.enableDamping = damping;
       globe.globeTileEngineMaxLevel(this.g.maxTileLevel);
@@ -259,18 +361,33 @@ export class Player {
     let fwd = [A.x - B.x, A.y - B.y, A.z - B.z];
     const d = dot(fwd, up);
     fwd = norm([fwd[0] - up[0] * d, fwd[1] - up[1] * d, fwd[2] - up[2] * d]);
+    // smooth the heading over time as well, so small kinks in the route don't jerk the model
+    if (this.fwdSmooth && v.mode === this.fwdMode) {
+      const a = 0.22;
+      let f = this.fwdSmooth.map((x, i) => x + (fwd[i] - x) * a);
+      const fd = dot(f, up);
+      f = norm([f[0] - up[0] * fd, f[1] - up[1] * fd, f[2] - up[2] * fd]);
+      fwd = f;
+    }
+    this.fwdSmooth = fwd; this.fwdMode = v.mode;
+    if (this.vehicle) this.heading = fwd;
     const side = cross(fwd, up);
     const basis = new THREE.Matrix4().makeBasis(
       new THREE.Vector3(...fwd), new THREE.Vector3(...up), new THREE.Vector3(...side));
     m.group.quaternion.setFromRotationMatrix(basis);
     m.group.position.set(P.x, P.y, P.z);
-    // constant on-screen size: world units per pixel at this distance from the camera
-    const camera = globe.camera();
+    this.shown = { m, mode: v.mode, scale: v.scale };
+    this.sizeVehicle();
+    m.group.visible = this.facing(v.pos[0], v.pos[1], v.pos[2]);
+  }
+
+  /** Constant on-screen size: world units per pixel at the model's distance from the camera. */
+  sizeVehicle() {
+    if (!this.shown?.m.group.visible) return;
+    const { m, mode, scale } = this.shown, { globe } = this.g, camera = globe.camera();
     const dist = camera.position.distanceTo(m.group.position);
     const unitsPerPx = (2 * dist * Math.tan((camera.fov * Math.PI) / 360)) / globe.renderer().domElement.clientHeight;
-    const s = (VEHICLE_PX[v.mode] * unitsPerPx / m.length) * v.scale;
-    m.group.scale.setScalar(s);
-    m.group.visible = this.facing(v.pos[0], v.pos[1], v.pos[2]);
+    m.group.scale.setScalar((VEHICLE_PX[mode] * unitsPerPx / m.length) * scale);
   }
 
   addModel(mode) {
@@ -363,13 +480,18 @@ export class Player {
 
   /** Is this point (at `alt` globe radii up) on the side of the globe facing the camera? */
   facing(lat, lng, alt = 0) {
-    const pov = this.g.globe.pointOfView();
+    const { globe } = this.g;
+    const pov = globe.pointOfView();
     const camR = 1 + pov.altitude, r = 1 + alt;
-    // visible if the point lies in front of the horizon as seen from the camera
-    return Math.cos(angle(lat, lng, pov.lat, pov.lng)) * r * camR > 1;
+    // visible if the point lies in front of the horizon as seen from the camera…
+    if (Math.cos(angle(lat, lng, pov.lat, pov.lng)) * r * camR <= 1) return false;
+    // …and in front of the camera, not behind it (the chase camera is tilted)
+    const p = globe.getCoords(lat, lng, alt);
+    return TMP.set(p.x, p.y, p.z).applyMatrix4(globe.camera().matrixWorldInverse).z < 0;
   }
 }
 
+const TMP = new THREE.Vector3();
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 const norm = (a) => { const n = Math.hypot(...a) || 1; return [a[0] / n, a[1] / n, a[2] / n]; };

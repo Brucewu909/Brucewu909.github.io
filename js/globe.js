@@ -129,6 +129,7 @@ export function createGlobe(el, { onPlaceClick, sky }) {
     maxTileLevel: MAX_TILE_LEVEL,
     setPlaces(next) { places = next; render(true); },
     onCamera(fn) { cameraListeners.push(fn); },
+    drawSky,
     showMarkers(on) { markersOn = on; render(true); },
     setSpin(on) { spinAllowed = on; controls.autoRotate = on; clearTimeout(idleTimer); },
     flyTo(lat, lng, altitude = 0.8, ms = 1200) {

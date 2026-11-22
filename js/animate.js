@@ -12,6 +12,11 @@ const longAlt = (w) => Math.min(2.0, Math.max(0.8, 0.6 + w * 1.1));
 // Tile detail while playing: enough for the close follow view, capped to avoid load stutter.
 const PLAY_TILE_LEVEL_CLOSE = 4, PLAY_TILE_LEVEL_FAR = 3;
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
+const clamp01 = (t) => Math.min(1, Math.max(0, t));
+const easeOut = (t) => 1 - (1 - t) ** 3;
+const easeOutBack = (t) => 1 + 2.2 * (t - 1) ** 3 + 1.2 * (t - 1) ** 2;   // slight overshoot "pop"
+// Arrival / departure timing (ms)
+const TAKEOFF_MS = 350, LAND_MS = 380, POP_MS = 480, PULSE_MS = 1300;
 
 function legPath(leg) {
   const a = leg.from, b = leg.to;
@@ -118,6 +123,8 @@ export class Player {
       const first = plans[0].from;
       target = { lat: first.lat, lng: first.lng, alt: legAlt(plans[0]) };
       tauPos = 0.55;
+      this.marks = new Map();
+      this.arrive(first, performance.now());
       this.caption = `${first.name}`;
       await hold(2600);
 
@@ -149,16 +156,22 @@ export class Player {
               target = { lat: Math.max(-80, Math.min(80, c.lat + side)), lng: c.lng, alt: camAlt };
             }
             const ahead = along(leg.points, Math.min(1, k + 0.02));
-            this.vehicle = { pos, ahead, mode: leg.mode };
+            const behind = along(leg.points, Math.max(0, k - 0.02));
+            // the vehicle grows out of the departure marker
+            this.vehicle = { pos, ahead, behind, mode: leg.mode, scale: easeOut(clamp01((now - t0) / TAKEOFF_MS)) };
           });
         }
         // finished legs stay on the overlay while playing (rebuilding globe geometry mid-flight stutters)
         done.push({ points: leg.points.map((p) => [...p]), color });
         this.finished = done;
+        const landedAt = performance.now();
+        this.landing = this.vehicle && { ...this.vehicle, t: landedAt };
         this.vehicle = null; this.trail = null;
         cities.push(leg.to);
+        this.arrive(leg.to, landedAt);
         this.caption = leg.to.name;
-        await hold(900);
+        await hold(1000);
+        this.landing = null;
       }
       // finale: pull back to show the whole trip
       if (!this.cancelled) {
@@ -176,7 +189,7 @@ export class Player {
       controls.enabled = true;
       controls.enableDamping = damping;
       globe.globeTileEngineMaxLevel(this.g.maxTileLevel);
-      this.vehicle = null; this.trail = null; this.caption = "";
+      this.vehicle = null; this.trail = null; this.landing = null; this.caption = "";
       this.clearOverlay();
       if (recorder) await new Promise((r) => { recorder.onstop = r; recorder.stop(); });
       this.g.showMarkers(true);
@@ -184,6 +197,12 @@ export class Player {
       this.playing = false;
     }
     return recorder && !this.cancelled ? new Blob(chunks, { type: "video/webm" }) : null;
+  }
+
+  /** Record an arrival: a first visit pops the city's marker in; every arrival sends out a pulse. */
+  arrive(city, t) {
+    const m = this.marks.get(city.cityId);
+    if (m) m.last = t; else this.marks.set(city.cityId, { first: t, last: t });
   }
 
   clearPaths() { this.g.globe.pathsData([]); }
@@ -209,17 +228,7 @@ export class Player {
     ctx.font = '400 11px "Space Mono", monospace';
     ctx.textBaseline = "middle";
 
-    // visited cities so far
-    const seen = new Set();
-    for (const c of cities) {
-      if (seen.has(c.cityId)) continue; seen.add(c.cityId);
-      const s = globe.getScreenCoords(c.lat, c.lng, 0.01);
-      if (!s || !this.facing(c.lat, c.lng)) continue;
-      ctx.fillStyle = "#f0c38e";
-      ctx.beginPath(); ctx.arc(s.x, s.y, 4, 0, Math.PI * 2); ctx.fill();
-      ctx.lineWidth = 3; ctx.strokeStyle = "rgba(3,5,10,.75)"; ctx.fillStyle = "#e8e4dc";
-      ctx.strokeText(c.name, s.x + 8, s.y); ctx.fillText(c.name, s.x + 8, s.y);
-    }
+    const now = performance.now();
 
     // routes: finished legs, then the leg in progress
     for (const route of [...(this.finished || []), ...(this.trail ? [this.trail] : [])]) {
@@ -235,15 +244,45 @@ export class Player {
       ctx.stroke();
     }
 
-    // the vehicle
-    if (this.vehicle) {
-      const { pos, ahead, mode } = this.vehicle;
+    // visited cities so far: markers pop in on first arrival and pulse on every arrival
+    const seen = new Set();
+    for (const c of cities) {
+      if (seen.has(c.cityId)) continue; seen.add(c.cityId);
+      const s = globe.getScreenCoords(c.lat, c.lng, 0.01);
+      if (!s || !this.facing(c.lat, c.lng)) continue;
+      const m = this.marks?.get(c.cityId) || { first: -1e9, last: -1e9 };
+      const pop = easeOutBack(clamp01((now - m.first) / POP_MS));
+      const pulse = (now - m.last) / PULSE_MS;
+      if (pulse >= 0 && pulse < 1) {
+        ctx.strokeStyle = `rgba(240,195,142,${0.85 * (1 - pulse)})`; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(s.x, s.y, 5 + 20 * easeOut(pulse), 0, Math.PI * 2); ctx.stroke();
+      }
+      ctx.fillStyle = "#f0c38e";
+      ctx.beginPath(); ctx.arc(s.x, s.y, 4 * Math.max(0, pop), 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = clamp01((now - m.first) / POP_MS);
+      ctx.lineWidth = 3; ctx.strokeStyle = "rgba(3,5,10,.75)"; ctx.fillStyle = "#e8e4dc";
+      ctx.strokeText(c.name, s.x + 8, s.y); ctx.fillText(c.name, s.x + 8, s.y);
+      ctx.globalAlpha = 1;
+    }
+
+    // the vehicle: in flight, or shrinking into the marker it just reached
+    let v = this.vehicle;
+    if (!v && this.landing) {
+      const k = clamp01((now - this.landing.t) / LAND_MS);
+      v = k < 1 ? { ...this.landing, scale: 1 - easeOut(k) } : null;
+    }
+    if (v && v.scale > 0.01) {
+      const { pos, ahead, behind, mode } = v;
       const s = globe.getScreenCoords(pos[0], pos[1], pos[2]);
       const s2 = globe.getScreenCoords(ahead[0], ahead[1], ahead[2]);
+      const s0 = globe.getScreenCoords(behind[0], behind[1], behind[2]);
       if (s) {
-        ctx.save(); ctx.translate(s.x, s.y);
+        ctx.save(); ctx.translate(s.x, s.y); ctx.scale(v.scale, v.scale);
+        ctx.globalAlpha = Math.min(1, v.scale * 1.5);
         if (mode === "flight") {
-          ctx.rotate(Math.atan2(s2.y - s.y, s2.x - s.x));
+          // heading from the path just ahead, or just behind at the very end of the leg
+          const [ax, ay] = Math.hypot(s2.x - s.x, s2.y - s.y) > 0.5 ? [s2.x - s.x, s2.y - s.y] : [s.x - s0.x, s.y - s0.y];
+          ctx.rotate(Math.atan2(ay, ax));
           drawPlane(ctx);
         } else {
           // ground travel: a ringed marker in the mode's colour

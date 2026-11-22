@@ -3,6 +3,7 @@ import { createGlobe } from "./globe.js";
 import { readPhotos } from "./photos.js";
 import { Vault } from "./store.js";
 import { Player } from "./animate.js";
+import { resolveRoutes } from "./routes.js";
 import {
   emptyData, addStay, removeVisit, placesOf, filterPresets, inRange, legsOf, MODES, sortVisits,
 } from "./visits.js";
@@ -388,6 +389,16 @@ for (const id of ["filter-from", "filter-to"]) {
 async function runAnimation(record) {
   const legs = legsOf(data, filtered());
   if (!legs.length) return;
+  // car, train and ferry legs follow real roads, railways and shipping lanes (looked up once, cached)
+  if (legs.some((l) => l.mode !== "flight")) {
+    for (const id of ["play", "record"]) $(id).disabled = true;
+    data.routes ??= {};
+    const missing = await resolveRoutes(legs, data.routes, (i, n) => status(`Finding routes ${i} / ${n}`, 0));
+    persist();
+    status(missing.length
+      ? `No ${missing.map((l) => `${MODES[l.mode].label.toLowerCase()} route ${l.from.name} → ${l.to.name}`).join(", ")}; shown as a straight line.`
+      : "", missing.length ? 12000 : 0);
+  }
   scrollTo({ top: 0 });
   document.body.classList.add("playing");
   for (const id of ["play", "record", "route-btn", "filter-preset"]) $(id).disabled = true;

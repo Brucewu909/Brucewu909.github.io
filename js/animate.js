@@ -1,16 +1,21 @@
-// Trip animation: a plane (or train, car, boat) travels city to city along great-circle paths,
-// with the camera following. Optionally recorded to a .webm video of the globe + overlay.
-import { slerp, angle, toVec, fromVec, centroid } from "./geo.js";
+// Trip animation: a 3D plane, car, train or ferry travels city to city — flights on great-circle
+// arcs, everything else along its real road / railway / shipping-lane route — with the camera
+// following. Optionally recorded to a .webm video of the sky, the globe and the overlay.
+import { slerp, angle, toVec, fromVec, centroid, distanceKm } from "./geo.js";
 import { MODES } from "./visits.js";
+import { makeVehicle, THREE } from "./models.js";
 
-const PATH_STEPS = 72;
+const FLIGHT_STEPS = 72;
 // Camera framing. Short legs (e.g. within Europe) are followed closely at one steady height;
-// long legs pull back so both ends fit; the trip ends on a view of every place visited.
+// long legs pull back; the trip ends on a view of every place visited.
 const SHORT_KM = 1500;
 const FOLLOW_ALT = 0.35;                       // globe radii above the surface
 const longAlt = (w) => Math.min(2.0, Math.max(0.8, 0.6 + w * 1.1));
 // Tile detail while playing: enough for the close follow view, capped to avoid load stutter.
 const PLAY_TILE_LEVEL_CLOSE = 4, PLAY_TILE_LEVEL_FAR = 3;
+// On-screen length of each vehicle model, in CSS pixels, whatever the zoom.
+const VEHICLE_PX = { flight: 56, car: 34, train: 72, boat: 54 };
+const GROUND_ALT = 0.0005;                     // ground routes sit on the surface
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 const clamp01 = (t) => Math.min(1, Math.max(0, t));
 const easeOut = (t) => 1 - (1 - t) ** 3;
@@ -18,18 +23,43 @@ const easeOutBack = (t) => 1 + 2.2 * (t - 1) ** 3 + 1.2 * (t - 1) ** 2;   // sli
 // Arrival / departure timing (ms)
 const TAKEOFF_MS = 350, LAND_MS = 380, POP_MS = 480, PULSE_MS = 1300;
 
+/** Resample a [[lat, lng], ...] route into `n` evenly spaced [lat, lng, alt] points. */
+function resample(route, n, alt) {
+  const cum = [0];
+  for (let i = 1; i < route.length; i++) {
+    cum.push(cum[i - 1] + distanceKm(route[i - 1][0], route[i - 1][1], route[i][0], route[i][1]));
+  }
+  const total = cum[cum.length - 1] || 1, out = [];
+  let j = 1;
+  for (let k = 0; k <= n; k++) {
+    const d = (k / n) * total;
+    while (j < route.length - 1 && cum[j] < d) j++;
+    const seg = cum[j] - cum[j - 1] || 1, t = clamp01((d - cum[j - 1]) / seg);
+    const a = { lat: route[j - 1][0], lng: route[j - 1][1] }, b = { lat: route[j][0], lng: route[j][1] };
+    const p = slerp(a, b, t);
+    out.push([p.lat, p.lng, alt]);
+  }
+  return { points: out, km: total };
+}
+
 function legPath(leg) {
   const a = leg.from, b = leg.to;
   const w = angle(a.lat, a.lng, b.lat, b.lng);
-  // flights stay inside the atmosphere (0.15 globe radii): at most 0.09 up, lower for short hops
-  const peak = leg.mode === "flight" ? Math.min(0.09, Math.max(0.012, w * 0.06)) : 0.002;
-  const points = [];
-  for (let i = 0; i <= PATH_STEPS; i++) {
-    const t = i / PATH_STEPS, p = slerp(a, b, t);
-    points.push([p.lat, p.lng, leg.mode === "flight" ? peak * Math.sin(Math.PI * t) : peak]);
+  let points, km = w * 6371;
+  if (leg.mode === "flight" || !leg.route) {
+    // flights (and ground legs with no known route) follow the great circle;
+    // flights stay inside the atmosphere: at most 0.09 globe radii up, lower for short hops
+    const peak = leg.mode === "flight" ? Math.min(0.09, Math.max(0.012, w * 0.06)) : GROUND_ALT;
+    points = [];
+    for (let i = 0; i <= FLIGHT_STEPS; i++) {
+      const t = i / FLIGHT_STEPS, p = slerp(a, b, t);
+      points.push([p.lat, p.lng, leg.mode === "flight" ? peak * Math.sin(Math.PI * t) : peak]);
+    }
+  } else {
+    const r = resample(leg.route, Math.min(700, Math.max(80, Math.round(leg.route.length * 1.5))), GROUND_ALT);
+    points = r.points; km = r.km;
   }
-  const km = w * 6371;
-  return { points, w, short: km <= SHORT_KM, duration: Math.min(6, Math.max(2.4, 1.6 + km / 2500)) * 1000 };
+  return { points, w, short: w * 6371 <= SHORT_KM, duration: Math.min(7, Math.max(2.4, 1.6 + km / 2500)) * 1000 };
 }
 
 /** Point at fraction t along a polyline of [lat, lng, alt] samples. */
@@ -44,12 +74,16 @@ function along(points, t) {
 export class Player {
   constructor(globeApi, overlay) {
     this.g = globeApi; this.overlay = overlay; this.playing = false;
+    this.routes = [];            // finished routes, kept on screen after playback until cleared
+    this.models = {};            // one 3D model per travel mode, created on first use
+    // keep the finished routes glued to the globe as the camera moves
+    globeApi.onCamera(() => { if (!this.playing) this.drawOverlay([], ""); });
   }
 
   stop() { this.cancelled = true; }
 
   /**
-   * @param legs   [{from, to, mode}] in travel order
+   * @param legs   [{from, to, mode, route?}] in travel order
    * @param title  caption drawn in the corner (e.g. "2025")
    * @param record when true, resolves with a webm Blob
    */
@@ -68,11 +102,11 @@ export class Player {
     const plans = legs.map((l) => ({ ...l, ...legPath(l) }));
     // Cap tile detail for the whole playback (fewer tile loads = no stutter).
     globe.globeTileEngineMaxLevel(plans.some((p) => p.short) ? PLAY_TILE_LEVEL_CLOSE : PLAY_TILE_LEVEL_FAR);
-    const done = [];        // finished path objects shown on the globe
-    globe.pathsData([]);    // clear routes from an earlier playback before the camera starts moving
+    const done = [];
+    this.routes = done;
     const cities = [plans[0].from];
 
-    // recording: composite the WebGL canvas and the overlay into one canvas each frame
+    // recording: composite the sky, the WebGL canvas and the overlay into one canvas each frame
     let rec = null, recCtx = null, recorder = null, chunks = [];
     if (record) {
       rec = document.createElement("canvas");
@@ -106,6 +140,7 @@ export class Player {
     const frame = (draw) => new Promise((resolve) => requestAnimationFrame((now) => {
       draw(now);
       steer(now);
+      this.placeVehicle(now);
       // render the globe now so the WebGL frame matches the overlay drawn for this camera
       globe.renderer().render(globe.scene(), globe.camera());
       this.drawOverlay(cities, title);
@@ -116,8 +151,8 @@ export class Player {
       }
       resolve(now);
     }));
-    const hold = async (ms, extra) => { const t0 = performance.now(); let now = t0;
-      while (now - t0 < ms && !this.cancelled) now = await frame(() => extra?.()); };
+    const hold = async (ms) => { const t0 = performance.now(); let now = t0;
+      while (now - t0 < ms && !this.cancelled) now = await frame(() => {}); };
 
     try {
       const first = plans[0].from;
@@ -133,7 +168,7 @@ export class Player {
         const color = MODES[leg.mode]?.color || "#fff";
         const camAlt = legAlt(leg);
         tauPos = leg.short ? 0.3 : 0.5;
-        // long legs: look from a little to one side (fixed per leg) so the arc reads as a curve
+        // long flights: look from a little to one side (fixed per leg) so the arc reads as a curve
         const mid = slerp(leg.from, leg.to, 0.5);
         const sideSign = mid.lat > 50 ? 1 : -1;
         this.caption = `${leg.from.name} → ${leg.to.name}`;
@@ -143,27 +178,24 @@ export class Player {
           await frame((now) => {
             e = Math.min(1, (now - t0) / leg.duration);
             const k = ease(e);
-            // the leg in progress is drawn on the overlay, in step with the vehicle
-            const n = Math.max(1, Math.floor(k * PATH_STEPS) + 1);
+            const n = Math.max(1, Math.floor(k * (leg.points.length - 1)) + 1);
             this.trail = { points: [...leg.points.slice(0, n), along(leg.points, k)], color };
             const pos = along(leg.points, k);
-            if (leg.short) {
-              // follow the vehicle itself at a steady height
+            if (leg.short || leg.mode !== "flight") {
+              // follow the vehicle itself (ground routes bend, so the straight midpoint is no use)
               target = { lat: pos[0], lng: pos[1], alt: camAlt };
             } else {
               const c = slerp(leg.from, leg.to, k);
               const side = sideSign * Math.min(10, leg.w * 12) * Math.sin(Math.PI * k);
               target = { lat: Math.max(-80, Math.min(80, c.lat + side)), lng: c.lng, alt: camAlt };
             }
-            const ahead = along(leg.points, Math.min(1, k + 0.02));
-            const behind = along(leg.points, Math.max(0, k - 0.02));
+            const ahead = along(leg.points, Math.min(1, k + 0.004));
+            const behind = along(leg.points, Math.max(0, k - 0.004));
             // the vehicle grows out of the departure marker
             this.vehicle = { pos, ahead, behind, mode: leg.mode, scale: easeOut(clamp01((now - t0) / TAKEOFF_MS)) };
           });
         }
-        // finished legs stay on the overlay while playing (rebuilding globe geometry mid-flight stutters)
-        done.push({ points: leg.points.map((p) => [...p]), color });
-        this.finished = done;
+        done.push({ points: leg.points, color });
         const landedAt = performance.now();
         this.landing = this.vehicle && { ...this.vehicle, t: landedAt };
         this.vehicle = null; this.trail = null;
@@ -184,17 +216,16 @@ export class Player {
         await hold(3200);
       }
     } finally {
-      this.finished = null;
-      globe.pathsData(done);   // hand the routes to the globe once playback is over
       controls.enabled = true;
       controls.enableDamping = damping;
       globe.globeTileEngineMaxLevel(this.g.maxTileLevel);
       this.vehicle = null; this.trail = null; this.landing = null; this.caption = "";
-      this.clearOverlay();
+      this.placeVehicle(performance.now());
       if (recorder) await new Promise((r) => { recorder.onstop = r; recorder.stop(); });
       this.g.showMarkers(true);
       this.g.setSpin(true);
       this.playing = false;
+      this.drawOverlay([], "");
     }
     return recorder && !this.cancelled ? new Blob(chunks, { type: "video/webm" }) : null;
   }
@@ -205,17 +236,53 @@ export class Player {
     if (m) m.last = t; else this.marks.set(city.cityId, { first: t, last: t });
   }
 
-  clearPaths() { this.g.globe.pathsData([]); }
+  clearPaths() { this.routes = []; this.drawOverlay([], ""); }
+
+  /** Position, orient and size the 3D model for the current (or landing) vehicle. */
+  placeVehicle(now) {
+    let v = this.vehicle;
+    if (!v && this.landing) {
+      const k = clamp01((now - this.landing.t) / LAND_MS);
+      v = k < 1 ? { ...this.landing, scale: 1 - easeOut(k) } : null;
+    }
+    for (const [mode, m] of Object.entries(this.models)) m.group.visible = !!v && v.mode === mode && v.scale > 0.01;
+    if (!v || v.scale <= 0.01) return;
+
+    const { globe } = this.g;
+    const m = this.models[v.mode] ||= this.addModel(v.mode);
+    const P = globe.getCoords(v.pos[0], v.pos[1], v.pos[2]);
+    let A = globe.getCoords(v.ahead[0], v.ahead[1], v.ahead[2]);
+    let B = P;
+    if (Math.hypot(A.x - P.x, A.y - P.y, A.z - P.z) < 1e-6) { A = P; B = globe.getCoords(v.behind[0], v.behind[1], v.behind[2]); }
+    // local frame: up = away from the globe's centre, forward = along the route
+    const up = norm([P.x, P.y, P.z]);
+    let fwd = [A.x - B.x, A.y - B.y, A.z - B.z];
+    const d = dot(fwd, up);
+    fwd = norm([fwd[0] - up[0] * d, fwd[1] - up[1] * d, fwd[2] - up[2] * d]);
+    const side = cross(fwd, up);
+    const basis = new THREE.Matrix4().makeBasis(
+      new THREE.Vector3(...fwd), new THREE.Vector3(...up), new THREE.Vector3(...side));
+    m.group.quaternion.setFromRotationMatrix(basis);
+    m.group.position.set(P.x, P.y, P.z);
+    // constant on-screen size: world units per pixel at this distance from the camera
+    const camera = globe.camera();
+    const dist = camera.position.distanceTo(m.group.position);
+    const unitsPerPx = (2 * dist * Math.tan((camera.fov * Math.PI) / 360)) / globe.renderer().domElement.clientHeight;
+    const s = (VEHICLE_PX[v.mode] * unitsPerPx / m.length) * v.scale;
+    m.group.scale.setScalar(s);
+    m.group.visible = this.facing(v.pos[0], v.pos[1], v.pos[2]);
+  }
+
+  addModel(mode) {
+    const m = makeVehicle(mode);
+    this.g.globe.scene().add(m.group);
+    return m;
+  }
 
   sizeOverlay() {
     const el = this.g.globe.renderer().domElement, c = this.overlay;
     if (c.width !== el.width || c.height !== el.height) { c.width = el.width; c.height = el.height; }
     return el.width / el.clientWidth;
-  }
-
-  clearOverlay() {
-    const c = this.overlay;
-    c.getContext("2d").clearRect(0, 0, c.width, c.height);
   }
 
   drawOverlay(cities, title) {
@@ -227,21 +294,35 @@ export class Player {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.font = '400 11px "Space Mono", monospace';
     ctx.textBaseline = "middle";
-
     const now = performance.now();
 
-    // routes: finished legs, then the leg in progress
-    for (const route of [...(this.finished || []), ...(this.trail ? [this.trail] : [])]) {
-      ctx.strokeStyle = route.color; ctx.lineWidth = 2; ctx.lineJoin = ctx.lineCap = "round";
-      ctx.beginPath();
-      let pen = false;
+    // Routes are projected from their real positions every frame, at a fixed pixel width,
+    // so they stay locked to the map at any zoom.
+    const vehicleAt = this.vehicle && globe.getScreenCoords(...this.vehicle.pos);
+    const gap = this.vehicle ? VEHICLE_PX[this.vehicle.mode] * 0.45 : 0;
+    for (const route of [...this.routes, ...(this.trail ? [this.trail] : [])]) {
+      const isTrail = route === this.trail;
+      const pts = [];
       for (const [la, ln, alt] of route.points) {
         const s = this.facing(la, ln, alt) && globe.getScreenCoords(la, ln, alt);
+        pts.push(s || null);
+      }
+      // stop the line just behind the moving vehicle so it doesn't draw over the model
+      if (isTrail && vehicleAt) {
+        while (pts.length && (!pts[pts.length - 1] ||
+          Math.hypot(pts[pts.length - 1].x - vehicleAt.x, pts[pts.length - 1].y - vehicleAt.y) < gap)) pts.pop();
+      }
+      ctx.beginPath();
+      let pen = false;
+      for (const s of pts) {
         if (!s) { pen = false; continue; }
         if (pen) ctx.lineTo(s.x, s.y); else ctx.moveTo(s.x, s.y);
         pen = true;
       }
-      ctx.stroke();
+      // dark casing under a coloured line, so routes read on any terrain
+      ctx.lineJoin = ctx.lineCap = "round";
+      ctx.strokeStyle = "rgba(3,5,10,.6)"; ctx.lineWidth = 4.5; ctx.stroke();
+      ctx.strokeStyle = route.color; ctx.lineWidth = 2.2; ctx.stroke();
     }
 
     // visited cities so far: markers pop in on first arrival and pulse on every arrival
@@ -265,49 +346,13 @@ export class Player {
       ctx.globalAlpha = 1;
     }
 
-    // the vehicle: in flight, or shrinking into the marker it just reached
-    let v = this.vehicle;
-    if (!v && this.landing) {
-      const k = clamp01((now - this.landing.t) / LAND_MS);
-      v = k < 1 ? { ...this.landing, scale: 1 - easeOut(k) } : null;
-    }
-    if (v && v.scale > 0.01) {
-      const { pos, ahead, behind, mode } = v;
-      const s = globe.getScreenCoords(pos[0], pos[1], pos[2]);
-      const s2 = globe.getScreenCoords(ahead[0], ahead[1], ahead[2]);
-      const s0 = globe.getScreenCoords(behind[0], behind[1], behind[2]);
-      if (s) {
-        // heading from the path just ahead, or just behind at the very end of the leg
-        const [ax, ay] = Math.hypot(s2.x - s.x, s2.y - s.y) > 0.5 ? [s2.x - s.x, s2.y - s.y] : [s.x - s0.x, s.y - s0.y];
-        const heading = Math.atan2(ay, ax);
-        const sprite = SPRITES[mode] || SPRITES.flight;
-        // shadow on the ground: under the plane (further away the higher it flies), just offset for ground travel
-        const g = mode === "flight" ? globe.getScreenCoords(pos[0], pos[1], 0) : { x: s.x + 2.5, y: s.y + 3 };
-        if (g && sprite.shadow) {
-          ctx.save(); ctx.translate(g.x + (mode === "flight" ? 6 : 0), g.y + (mode === "flight" ? 9 : 0));
-          ctx.rotate(heading); ctx.scale(v.scale * 0.92, v.scale * 0.92);
-          ctx.globalAlpha = 0.32 * Math.min(1, v.scale * 1.5);
-          ctx.drawImage(sprite.shadow, -sprite.w / 2, -sprite.h / 2, sprite.w, sprite.h);
-          ctx.restore();
-        }
-        ctx.save(); ctx.translate(s.x, s.y); ctx.rotate(heading); ctx.scale(v.scale, v.scale);
-        ctx.globalAlpha = Math.min(1, v.scale * 1.5);
-        if (sprite.img.complete && sprite.img.naturalWidth) {
-          ctx.drawImage(sprite.img, -sprite.w / 2, -sprite.h / 2, sprite.w, sprite.h);
-        } else {
-          ctx.fillStyle = MODES[mode].color; ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.fill();
-        }
-        ctx.restore();
-      }
-    }
-
     // captions, bottom left (clear of the page's top bar)
     const H = this.overlay.height / dpr;
     ctx.textAlign = "left";
     ctx.lineWidth = 4; ctx.strokeStyle = "rgba(3,5,10,.6)"; ctx.fillStyle = "#e8e4dc";
     if (title) {
       ctx.font = '500 13px "Space Grotesk", sans-serif';
-      const t = title.toUpperCase().split("").join(" ");
+      const t = title.toUpperCase().split("").join(" ");
       ctx.strokeText(t, 24, H - 58); ctx.fillText(t, 24, H - 58);
     }
     if (this.caption) {
@@ -325,24 +370,6 @@ export class Player {
   }
 }
 
-/** Shaded top-down vehicle illustrations (img/*.svg), nose pointing right; size in CSS px. */
-const SPRITES = Object.fromEntries(Object.entries({
-  flight: ["img/plane.svg", 48, 48],
-  car:    ["img/car.svg",   36, 36],
-  train:  ["img/train.svg", 66, 22],
-  boat:   ["img/boat.svg",  50, 25],
-}).map(([mode, [src, w, h]]) => {
-  const sprite = { img: new Image(), w, h, shadow: null };
-  sprite.img.onload = () => {
-    // a dark silhouette of the same picture, used as its shadow
-    const c = document.createElement("canvas");
-    c.width = sprite.img.naturalWidth; c.height = sprite.img.naturalHeight;
-    const x = c.getContext("2d");
-    x.drawImage(sprite.img, 0, 0);
-    x.globalCompositeOperation = "source-in";
-    x.fillStyle = "#000"; x.fillRect(0, 0, c.width, c.height);
-    sprite.shadow = c;
-  };
-  sprite.img.src = src;
-  return [mode, sprite];
-}));
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const norm = (a) => { const n = Math.hypot(...a) || 1; return [a[0] / n, a[1] / n, a[2] / n]; };

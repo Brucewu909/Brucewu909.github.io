@@ -119,13 +119,16 @@ export function createGlobe(el, { onPlaceClick, sky }) {
   }
   new ResizeObserver(drawSky).observe(sky);
 
-  globe.onZoom(() => { render(); drawSky(); });
+  const cameraListeners = [];
+  globe.onZoom(() => { render(); drawSky(); cameraListeners.forEach((fn) => fn()); });
+  new ResizeObserver(() => cameraListeners.forEach((fn) => fn())).observe(el);
 
   return {
     globe,
     sky,
     maxTileLevel: MAX_TILE_LEVEL,
     setPlaces(next) { places = next; render(true); },
+    onCamera(fn) { cameraListeners.push(fn); },
     showMarkers(on) { markersOn = on; render(true); },
     setSpin(on) { spinAllowed = on; controls.autoRotate = on; clearTimeout(idleTimer); },
     flyTo(lat, lng, altitude = 0.8, ms = 1200) {

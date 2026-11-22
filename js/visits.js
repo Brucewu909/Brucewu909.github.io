@@ -5,7 +5,7 @@
 const MERGE_GAP_DAYS = 2;   // photos in the same city within 2 days of each other = one visit
 const DAY = 86400000;
 
-export const emptyData = () => ({ version: 1, visits: [], legModes: {}, unplaced: [] });
+export const emptyData = () => ({ version: 1, visits: [], legModes: {}, unplaced: [], routes: {} });
 
 export const isoDate = (d) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;

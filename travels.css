@@ -48,6 +48,12 @@ a { color: inherit; }
 .poi:hover .label, .poi.cluster:hover { color: #fff; }
 .poi:focus-visible { outline: 1px solid var(--ink); outline-offset: 4px; }
 
+#map-credit {
+  position: fixed; left: 12px; bottom: 6px; z-index: 11; margin: 0; transition: opacity .2s;
+  font: 400 9px var(--mono); letter-spacing: .04em; color: rgba(232, 228, 220, .45);
+}
+body.scrolled #map-credit { opacity: 0; }
+
 /* ---- top bar ----------------------------------------------------------- */
 #bar {
   position: fixed; top: 0; left: 0; right: 0; z-index: 10; height: var(--bar-h);

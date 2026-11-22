@@ -411,6 +411,8 @@ $("record").onclick = () => runAnimation(true);
 $("stop").onclick = () => player.stop();
 $("clear-paths").onclick = () => { player.clearPaths(); $("clear-paths").hidden = true; };
 
+addEventListener("scroll", () => document.body.classList.toggle("scrolled", scrollY > 40), { passive: true });
+
 $("log-handle").onclick = () => {
   const top = $("log").offsetTop;
   scrollTo({ top: scrollY < top / 2 ? top - 40 : 0 });

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; font-src https://cdn.jsdelivr.net; img-src 'self' data: blob: https://cdn.jsdelivr.net; connect-src 'self' https://cdn.jsdelivr.net; worker-src 'self' blob:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; font-src https://cdn.jsdelivr.net; img-src 'self' data: blob: https://cdn.jsdelivr.net https://server.arcgisonline.com; connect-src 'self' https://cdn.jsdelivr.net https://server.arcgisonline.com; worker-src 'self' blob:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Travels</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/space-grotesk@5.3.0/latin-400.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/space-grotesk@5.3.0/latin-500.css">
@@ -48,6 +48,8 @@
     </div>
   </header>
 
+  <p id="map-credit">Imagery © Esri, Maxar, Earthstar Geographics</p>
+
   <!-- settings (gear) -->
   <div id="settings" popover class="menu menu-tl">
     <p id="save-state" class="menu-note"></p>
@@ -55,7 +57,7 @@
     <button id="export" type="button">Export backup</button>
     <label class="menu-item">Import backup<input id="import" type="file" accept=".json,application/json" hidden></label>
     <button id="wipe" type="button" class="danger" hidden>Delete data on this device</button>
-    <p class="menu-note small">City data © <a href="https://www.geonames.org/" rel="noreferrer">GeoNames</a>, CC BY 4.0. Imagery: NASA Blue Marble.</p>
+    <p class="menu-note small">City data © <a href="https://www.geonames.org/" rel="noreferrer">GeoNames</a>, CC BY 4.0. Imagery: Esri, Maxar, Earthstar Geographics, and the GIS User Community.</p>
   </div>
 
   <!-- how you got between cities -->

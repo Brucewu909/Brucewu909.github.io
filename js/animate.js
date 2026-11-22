@@ -9,7 +9,8 @@ const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 function legPath(leg) {
   const a = leg.from, b = leg.to;
   const w = angle(a.lat, a.lng, b.lat, b.lng);
-  const peak = leg.mode === "flight" ? Math.min(0.25, Math.max(0.03, w * 0.18)) : 0.004;
+  // flights stay inside the atmosphere (0.15 globe radii): at most 0.09 up, lower for short hops
+  const peak = leg.mode === "flight" ? Math.min(0.09, Math.max(0.012, w * 0.06)) : 0.002;
   const points = [];
   for (let i = 0; i <= PATH_STEPS; i++) {
     const t = i / PATH_STEPS, p = slerp(a, b, t);

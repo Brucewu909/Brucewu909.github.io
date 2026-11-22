@@ -3,12 +3,17 @@ import { cluster } from "./cluster.js";
 import { countryName } from "./cities.js";
 
 const TEX = "https://cdn.jsdelivr.net/npm/three-globe@2.45.6/example/img/";
+// Esri World Imagery: satellite tiles that load in at higher detail as you zoom in.
+const TILE = (x, y, level) =>
+  `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${level}/${y}/${x}`;
 const IDLE_RESUME_MS = 5000;
+const SPIN_FEEL = 0.6;   // drag-to-spin speed relative to globe.gl's default
+const ZOOM_FEEL = 1.8;   // wheel/pinch zoom speed relative to globe.gl's default
 
 export function createGlobe(el, { onPlaceClick }) {
   const globe = new Globe(el, { rendererConfig: { preserveDrawingBuffer: true, antialias: true } })
-    .globeImageUrl(TEX + "earth-blue-marble.jpg")
-    .bumpImageUrl(TEX + "earth-topology.png")
+    .globeTileEngineUrl(TILE)
+    .globeTileEngineMaxLevel(18)
     .backgroundImageUrl(TEX + "night-sky.png")
     .showAtmosphere(true)
     .atmosphereColor("#8fb4e0")
@@ -26,9 +31,13 @@ export function createGlobe(el, { onPlaceClick }) {
   controls.autoRotate = true;
   controls.autoRotateSpeed = 0.35;
   controls.enableDamping = true;
-  controls.minDistance = 112;   // globe radius is 100
+  controls.minDistance = 100.3; // globe radius is 100: close enough for street-level tiles
   controls.maxDistance = 380;   // the starting view is fully zoomed out
-  controls.zoomSpeed = 0.8;
+
+  // globe.gl re-tunes spin and zoom speed to the altitude on every camera change; scale its values
+  // (this listener is added after globe.gl's own, so it runs second)
+  const tune = () => { controls.rotateSpeed *= SPIN_FEEL; controls.zoomSpeed *= ZOOM_FEEL; };
+  controls.addEventListener("change", tune);
 
   // Scrolling: wheel zooms the globe, but once it is fully zoomed out (or the page is already
   // scrolled) the wheel scrolls the page instead, pulling the travel log up over the globe.

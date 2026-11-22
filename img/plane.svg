@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Airliner seen from above, nose pointing right. Shaded to read as a small 3D model. -->
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.45" stop-color="#f1f3f6"/>
+      <stop offset="1" stop-color="#9aa3b0"/>
+    </linearGradient>
+    <linearGradient id="wingTop" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#c9cfd8"/>
+      <stop offset="1" stop-color="#eef1f5"/>
+    </linearGradient>
+    <linearGradient id="wingBot" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#a7afbb"/>
+      <stop offset="1" stop-color="#d6dbe2"/>
+    </linearGradient>
+    <linearGradient id="engine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8d96a3"/>
+      <stop offset="1" stop-color="#4b525c"/>
+    </linearGradient>
+  </defs>
+  <!-- wings (upper wing lit, lower wing in shade) -->
+  <path d="M70 58 L48 10 L38 10 L50 58 Z" fill="url(#wingTop)" stroke="#7d8693" stroke-width="1"/>
+  <path d="M70 70 L48 118 L38 118 L50 70 Z" fill="url(#wingBot)" stroke="#6f7884" stroke-width="1"/>
+  <!-- engines -->
+  <rect x="50" y="30" width="16" height="7" rx="3.5" fill="url(#engine)"/>
+  <rect x="50" y="91" width="16" height="7" rx="3.5" fill="url(#engine)"/>
+  <!-- tailplane -->
+  <path d="M22 60 L10 40 L5 40 L12 60 Z" fill="url(#wingTop)" stroke="#7d8693" stroke-width="1"/>
+  <path d="M22 68 L10 88 L5 88 L12 68 Z" fill="url(#wingBot)" stroke="#6f7884" stroke-width="1"/>
+  <!-- fuselage -->
+  <path d="M8 64 C8 58 12 56.5 20 56.5 L104 56.5 C116 56.5 124 60 124 64 C124 68 116 71.5 104 71.5 L20 71.5 C12 71.5 8 70 8 64 Z"
+        fill="url(#body)" stroke="#6f7884" stroke-width="1"/>
+  <!-- spine highlight, livery stripe, cockpit -->
+  <path d="M18 60.5 L106 60.5" stroke="#ffffff" stroke-width="2" stroke-linecap="round" opacity="0.9"/>
+  <path d="M16 67 L104 67" stroke="#f0c38e" stroke-width="2" stroke-linecap="round"/>
+  <path d="M112 59.5 C117 60.5 120 62 121 64 C120 66 117 67.5 112 68.5 Z" fill="#2b3542"/>
+  <!-- vertical fin seen from above -->
+  <path d="M8 64 L26 64" stroke="#5d6672" stroke-width="3" stroke-linecap="round"/>
+</svg>

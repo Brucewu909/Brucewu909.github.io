@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 64" width="192" height="64">
+  <!-- High-speed train (two carriages) seen from above, nose pointing right. -->
+  <defs>
+    <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.5" stop-color="#e6ebf0"/>
+      <stop offset="1" stop-color="#8e99a6"/>
+    </linearGradient>
+    <linearGradient id="nose" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#e6ebf0"/>
+      <stop offset="1" stop-color="#ffffff"/>
+    </linearGradient>
+  </defs>
+  <!-- rear carriage -->
+  <rect x="4" y="18" width="86" height="28" rx="6" fill="url(#shell)" stroke="#5f6a76" stroke-width="1"/>
+  <!-- coupling -->
+  <rect x="89" y="26" width="6" height="12" fill="#3a424c"/>
+  <!-- power car with tapered nose -->
+  <path d="M94 18 L150 18 C170 18 186 24 188 32 C186 40 170 46 150 46 L94 46 Z"
+        fill="url(#shell)" stroke="#5f6a76" stroke-width="1"/>
+  <path d="M152 21 C168 22 180 26 183 32 C180 38 168 42 152 43 Z" fill="url(#nose)" opacity="0.8"/>
+  <!-- windscreen -->
+  <path d="M160 25 C170 27 176 29 178 32 C176 35 170 37 160 39 Z" fill="#1d2a3a"/>
+  <!-- livery stripes -->
+  <path d="M8 39 L88 39 M96 39 L158 39" stroke="#3aa58a" stroke-width="3" stroke-linecap="round"/>
+  <path d="M8 24 L88 24 M96 24 L150 24" stroke="#ffffff" stroke-width="2" stroke-linecap="round" opacity="0.9"/>
+  <!-- roof details: pantograph and vents -->
+  <path d="M112 28 L128 36 M112 36 L128 28" stroke="#3a424c" stroke-width="1.6"/>
+  <rect x="20" y="29" width="12" height="6" rx="2" fill="#aab3be"/>
+  <rect x="58" y="29" width="12" height="6" rx="2" fill="#aab3be"/>
+</svg>

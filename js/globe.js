@@ -21,7 +21,7 @@ export function createGlobe(el, { onPlaceClick, sky }) {
     .atmosphereColor("#8fb4e0")
     .atmosphereAltitude(0.15)
     .htmlTransitionDuration(0)
-    .htmlAltitude(0.01)
+    .htmlAltitude(0)            // markers sit on the surface, so they stay put at any viewing angle
     .htmlElement(markerEl)
     .pathPoints("points")
     .pathPointLat((p) => p[0]).pathPointLng((p) => p[1]).pathPointAlt((p) => p[2])

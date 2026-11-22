@@ -248,7 +248,7 @@ export class Player {
     const seen = new Set();
     for (const c of cities) {
       if (seen.has(c.cityId)) continue; seen.add(c.cityId);
-      const s = globe.getScreenCoords(c.lat, c.lng, 0.01);
+      const s = globe.getScreenCoords(c.lat, c.lng, 0);
       if (!s || !this.facing(c.lat, c.lng)) continue;
       const m = this.marks?.get(c.cityId) || { first: -1e9, last: -1e9 };
       const pop = easeOutBack(clamp01((now - m.first) / POP_MS));
@@ -277,19 +277,25 @@ export class Player {
       const s2 = globe.getScreenCoords(ahead[0], ahead[1], ahead[2]);
       const s0 = globe.getScreenCoords(behind[0], behind[1], behind[2]);
       if (s) {
-        ctx.save(); ctx.translate(s.x, s.y); ctx.scale(v.scale, v.scale);
+        // heading from the path just ahead, or just behind at the very end of the leg
+        const [ax, ay] = Math.hypot(s2.x - s.x, s2.y - s.y) > 0.5 ? [s2.x - s.x, s2.y - s.y] : [s.x - s0.x, s.y - s0.y];
+        const heading = Math.atan2(ay, ax);
+        const sprite = SPRITES[mode] || SPRITES.flight;
+        // shadow on the ground: under the plane (further away the higher it flies), just offset for ground travel
+        const g = mode === "flight" ? globe.getScreenCoords(pos[0], pos[1], 0) : { x: s.x + 2.5, y: s.y + 3 };
+        if (g && sprite.shadow) {
+          ctx.save(); ctx.translate(g.x + (mode === "flight" ? 6 : 0), g.y + (mode === "flight" ? 9 : 0));
+          ctx.rotate(heading); ctx.scale(v.scale * 0.92, v.scale * 0.92);
+          ctx.globalAlpha = 0.32 * Math.min(1, v.scale * 1.5);
+          ctx.drawImage(sprite.shadow, -sprite.w / 2, -sprite.h / 2, sprite.w, sprite.h);
+          ctx.restore();
+        }
+        ctx.save(); ctx.translate(s.x, s.y); ctx.rotate(heading); ctx.scale(v.scale, v.scale);
         ctx.globalAlpha = Math.min(1, v.scale * 1.5);
-        if (mode === "flight") {
-          // heading from the path just ahead, or just behind at the very end of the leg
-          const [ax, ay] = Math.hypot(s2.x - s.x, s2.y - s.y) > 0.5 ? [s2.x - s.x, s2.y - s.y] : [s.x - s0.x, s.y - s0.y];
-          ctx.rotate(Math.atan2(ay, ax));
-          drawPlane(ctx);
+        if (sprite.img.complete && sprite.img.naturalWidth) {
+          ctx.drawImage(sprite.img, -sprite.w / 2, -sprite.h / 2, sprite.w, sprite.h);
         } else {
-          // ground travel: a ringed marker in the mode's colour
-          ctx.fillStyle = "#03050a"; ctx.strokeStyle = MODES[mode].color; ctx.lineWidth = 2;
-          ctx.beginPath(); ctx.arc(0, 0, 6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-          ctx.fillStyle = MODES[mode].color;
-          ctx.beginPath(); ctx.arc(0, 0, 2.5, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = MODES[mode].color; ctx.beginPath(); ctx.arc(0, 0, 5, 0, Math.PI * 2); ctx.fill();
         }
         ctx.restore();
       }
@@ -319,13 +325,24 @@ export class Player {
   }
 }
 
-function drawPlane(ctx) {
-  // simple top-down airliner pointing along +x
-  ctx.fillStyle = "#e8e4dc"; ctx.strokeStyle = "rgba(3,5,10,.7)"; ctx.lineWidth = 1.2;
-  ctx.beginPath();
-  ctx.moveTo(13, 0); ctx.lineTo(9, -1.8); ctx.lineTo(2, -2); ctx.lineTo(-3, -11); ctx.lineTo(-6, -11);
-  ctx.lineTo(-3, -2); ctx.lineTo(-9, -2); ctx.lineTo(-12, -6); ctx.lineTo(-14, -6); ctx.lineTo(-12, 0);
-  ctx.lineTo(-14, 6); ctx.lineTo(-12, 6); ctx.lineTo(-9, 2); ctx.lineTo(-3, 2); ctx.lineTo(-6, 11);
-  ctx.lineTo(-3, 11); ctx.lineTo(2, 2); ctx.lineTo(9, 1.8); ctx.closePath();
-  ctx.fill(); ctx.stroke();
-}
+/** Shaded top-down vehicle illustrations (img/*.svg), nose pointing right; size in CSS px. */
+const SPRITES = Object.fromEntries(Object.entries({
+  flight: ["img/plane.svg", 48, 48],
+  car:    ["img/car.svg",   36, 36],
+  train:  ["img/train.svg", 66, 22],
+  boat:   ["img/boat.svg",  50, 25],
+}).map(([mode, [src, w, h]]) => {
+  const sprite = { img: new Image(), w, h, shadow: null };
+  sprite.img.onload = () => {
+    // a dark silhouette of the same picture, used as its shadow
+    const c = document.createElement("canvas");
+    c.width = sprite.img.naturalWidth; c.height = sprite.img.naturalHeight;
+    const x = c.getContext("2d");
+    x.drawImage(sprite.img, 0, 0);
+    x.globalCompositeOperation = "source-in";
+    x.fillStyle = "#000"; x.fillRect(0, 0, c.width, c.height);
+    sprite.shadow = c;
+  };
+  sprite.img.src = src;
+  return [mode, sprite];
+}));

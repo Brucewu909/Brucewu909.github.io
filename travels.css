@@ -1,0 +1,12 @@
+body.travels { place-items: start center; }
+body.travels main { width: 100%; padding-top: 3rem; }
+.travels header { margin-bottom: 2rem; }
+.trip {
+  border-top: 1px solid color-mix(in srgb, var(--fg) 15%, transparent);
+  padding: 1.25rem 0;
+}
+.trip h2 { margin: 0; font-size: 1.35rem; }
+.trip .dates { margin: .15rem 0 .5rem; font-size: .9rem; }
+.trip ul { margin: .5rem 0; padding-left: 1.2rem; }
+.trip .notes { margin: .5rem 0 0; }
+.empty { font-style: italic; }

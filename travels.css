@@ -22,7 +22,8 @@ a { color: inherit; }
 
 /* ---- globe, fixed behind the page ------------------------------------- */
 #stage { position: fixed; inset: 0; }
-#globe, #overlay { position: absolute; inset: 0; }
+#sky, #globe, #overlay { position: absolute; inset: 0; }
+#sky { width: 100%; height: 100%; }
 #overlay { pointer-events: none; width: 100%; height: 100%; }
 #drop-hint {
   position: absolute; inset: 0; display: grid; place-items: center;

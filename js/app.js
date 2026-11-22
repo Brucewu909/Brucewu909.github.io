@@ -15,7 +15,7 @@ let customRange = null;
 let declinedSaving = false;   // "Not now" on the save prompt: keep this session in memory only
 let lockedSaved = false;      // a saved copy exists on this device but wasn't unlocked
 
-const globeApi = createGlobe($("globe"), { onPlaceClick: showPlace });
+const globeApi = createGlobe($("globe"), { onPlaceClick: showPlace, sky: $("sky") });
 const player = new Player(globeApi, $("overlay"));
 
 // ------------------------------------------------------------- rendering ----

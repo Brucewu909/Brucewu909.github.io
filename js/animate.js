@@ -1,10 +1,16 @@
 // Trip animation: a plane (or train, car, boat) travels city to city along great-circle paths,
 // with the camera following. Optionally recorded to a .webm video of the globe + overlay.
-import { slerp, angle, toVec, fromVec } from "./geo.js";
+import { slerp, angle, toVec, fromVec, centroid } from "./geo.js";
 import { MODES } from "./visits.js";
 
 const PATH_STEPS = 72;
-const PLAY_TILE_LEVEL = 3;
+// Camera framing. Short legs (e.g. within Europe) are followed closely at one steady height;
+// long legs pull back so both ends fit; the trip ends on a view of every place visited.
+const SHORT_KM = 1500;
+const FOLLOW_ALT = 0.35;                       // globe radii above the surface
+const longAlt = (w) => Math.min(2.0, Math.max(0.8, 0.6 + w * 1.1));
+// Tile detail while playing: enough for the close follow view, capped to avoid load stutter.
+const PLAY_TILE_LEVEL_CLOSE = 4, PLAY_TILE_LEVEL_FAR = 3;
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 
 function legPath(leg) {
@@ -18,7 +24,7 @@ function legPath(leg) {
     points.push([p.lat, p.lng, leg.mode === "flight" ? peak * Math.sin(Math.PI * t) : peak]);
   }
   const km = w * 6371;
-  return { points, w, duration: Math.min(6, Math.max(2.2, 1.6 + km / 2500)) * 1000 };
+  return { points, w, short: km <= SHORT_KM, duration: Math.min(6, Math.max(2.4, 1.6 + km / 2500)) * 1000 };
 }
 
 /** Point at fraction t along a polyline of [lat, lng, alt] samples. */
@@ -51,12 +57,12 @@ export class Player {
     const damping = controls.enableDamping;
     controls.enableDamping = false;   // leftover drag momentum would fight the scripted camera
     controls.enabled = false;
-    // The camera stays high while playing, so cap tile detail: fewer tile loads = no stutter.
-    globe.globeTileEngineMaxLevel(PLAY_TILE_LEVEL);
     this.g.setSpin(false);
     this.g.showMarkers(false);
 
     const plans = legs.map((l) => ({ ...l, ...legPath(l) }));
+    // Cap tile detail for the whole playback (fewer tile loads = no stutter).
+    globe.globeTileEngineMaxLevel(plans.some((p) => p.short) ? PLAY_TILE_LEVEL_CLOSE : PLAY_TILE_LEVEL_FAR);
     const done = [];        // finished path objects shown on the globe
     globe.pathsData([]);    // clear routes from an earlier playback before the camera starts moving
     const cities = [plans[0].from];
@@ -78,17 +84,19 @@ export class Player {
     // sphere), so changes of leg, altitude or framing glide instead of jumping.
     const pov0 = globe.pointOfView();
     const cam = { v: toVec(pov0.lat, pov0.lng), alt: pov0.altitude };
-    let target = { lat: pov0.lat, lng: pov0.lng, alt: pov0.altitude }, tau = 0.6, lastT = performance.now();
+    let target = { lat: pov0.lat, lng: pov0.lng, alt: pov0.altitude }, lastT = performance.now();
+    let tauPos = 0.6;          // how tightly the camera tracks its target position (s)
+    const tauAlt = 0.9;        // height always changes gently
     const steer = (now) => {
       const dt = Math.min(0.1, Math.max(0, (now - lastT) / 1000)); lastT = now;
-      const a = 1 - Math.exp(-dt / tau);
+      const a = 1 - Math.exp(-dt / tauPos), b = 1 - Math.exp(-dt / tauAlt);
       const tv = toVec(target.lat, target.lng);
       cam.v = cam.v.map((c, i) => c + (tv[i] - c) * a);
-      cam.alt += (target.alt - cam.alt) * a;
+      cam.alt += (target.alt - cam.alt) * b;
       const p = fromVec(cam.v);
       globe.pointOfView({ lat: p.lat, lng: p.lng, altitude: cam.alt }, 0);
     };
-    const legAlt = (leg) => Math.min(2.2, Math.max(0.9, leg.w * 1.4));
+    const legAlt = (leg) => (leg.short ? FOLLOW_ALT : longAlt(leg.w));
 
     const frame = (draw) => new Promise((resolve) => requestAnimationFrame((now) => {
       draw(now);
@@ -96,7 +104,11 @@ export class Player {
       // render the globe now so the WebGL frame matches the overlay drawn for this camera
       globe.renderer().render(globe.scene(), globe.camera());
       this.drawOverlay(cities, title);
-      if (recCtx) { recCtx.drawImage(el, 0, 0); recCtx.drawImage(this.overlay, 0, 0, rec.width, rec.height); }
+      if (recCtx) {
+        recCtx.drawImage(this.g.sky, 0, 0, rec.width, rec.height);
+        recCtx.drawImage(el, 0, 0);
+        recCtx.drawImage(this.overlay, 0, 0, rec.width, rec.height);
+      }
       resolve(now);
     }));
     const hold = async (ms, extra) => { const t0 = performance.now(); let now = t0;
@@ -105,16 +117,16 @@ export class Player {
     try {
       const first = plans[0].from;
       target = { lat: first.lat, lng: first.lng, alt: legAlt(plans[0]) };
-      tau = 0.55;
+      tauPos = 0.55;
       this.caption = `${first.name}`;
-      await hold(2200);
-      tau = 0.4;
+      await hold(2600);
 
       for (const leg of plans) {
         if (this.cancelled) break;
         const color = MODES[leg.mode]?.color || "#fff";
         const camAlt = legAlt(leg);
-        // look from a little to one side of the route (fixed per leg) so long arcs read as curves
+        tauPos = leg.short ? 0.3 : 0.5;
+        // long legs: look from a little to one side (fixed per leg) so the arc reads as a curve
         const mid = slerp(leg.from, leg.to, 0.5);
         const sideSign = mid.lat > 50 ? 1 : -1;
         this.caption = `${leg.from.name} → ${leg.to.name}`;
@@ -128,10 +140,14 @@ export class Player {
             const n = Math.max(1, Math.floor(k * PATH_STEPS) + 1);
             this.trail = { points: [...leg.points.slice(0, n), along(leg.points, k)], color };
             const pos = along(leg.points, k);
-            const c = slerp(leg.from, leg.to, k);
-            const side = sideSign * Math.min(10, leg.w * 12) * Math.sin(Math.PI * k);
-            target = { lat: Math.max(-80, Math.min(80, c.lat + side)), lng: c.lng,
-                       alt: camAlt + 0.2 * Math.sin(Math.PI * k) };
+            if (leg.short) {
+              // follow the vehicle itself at a steady height
+              target = { lat: pos[0], lng: pos[1], alt: camAlt };
+            } else {
+              const c = slerp(leg.from, leg.to, k);
+              const side = sideSign * Math.min(10, leg.w * 12) * Math.sin(Math.PI * k);
+              target = { lat: Math.max(-80, Math.min(80, c.lat + side)), lng: c.lng, alt: camAlt };
+            }
             const ahead = along(leg.points, Math.min(1, k + 0.02));
             this.vehicle = { pos, ahead, mode: leg.mode };
           });
@@ -144,7 +160,16 @@ export class Player {
         this.caption = leg.to.name;
         await hold(900);
       }
-      await hold(800);
+      // finale: pull back to show the whole trip
+      if (!this.cancelled) {
+        const stops = [plans[0].from, ...plans.map((p) => p.to)];
+        const c = centroid(stops);
+        const spread = Math.max(...stops.map((p) => angle(c.lat, c.lng, p.lat, p.lng)));
+        target = { lat: c.lat, lng: c.lng, alt: Math.min(2.6, Math.max(0.5, 0.35 + spread * 2.4)) };
+        tauPos = 0.9;
+        this.caption = "";
+        await hold(3200);
+      }
     } finally {
       this.finished = null;
       globe.pathsData(done);   // hand the routes to the globe once playback is over

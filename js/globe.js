@@ -8,14 +8,15 @@ const TILE = (x, y, level) =>
   `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${level}/${y}/${x}`;
 const MAX_TILE_LEVEL = 18;
 const IDLE_RESUME_MS = 5000;
+const SKY_PX_PER_DEG = 0.5; // the star background drifts only slightly as the globe turns
 const SPIN_FEEL = 0.6;   // drag-to-spin speed relative to globe.gl's default
 const ZOOM_FEEL = 1.8;   // wheel/pinch zoom speed relative to globe.gl's default
 
-export function createGlobe(el, { onPlaceClick }) {
-  const globe = new Globe(el, { rendererConfig: { preserveDrawingBuffer: true, antialias: true } })
+export function createGlobe(el, { onPlaceClick, sky }) {
+  const globe = new Globe(el, { rendererConfig: { preserveDrawingBuffer: true, antialias: true, alpha: true } })
     .globeTileEngineUrl(TILE)
     .globeTileEngineMaxLevel(MAX_TILE_LEVEL)
-    .backgroundImageUrl(TEX + "night-sky.png")
+    .backgroundColor("rgba(0,0,0,0)")   // stars are drawn on a separate, nearly still canvas behind
     .showAtmosphere(true)
     .atmosphereColor("#8fb4e0")
     .atmosphereAltitude(0.15)
@@ -98,10 +99,31 @@ export function createGlobe(el, { onPlaceClick }) {
     return el;
   }
 
-  globe.onZoom(() => render());
+  // ---- star background: its own canvas behind the globe, drifting at a fraction of the spin ----
+  const stars = new Image();
+  stars.crossOrigin = "anonymous";       // keeps the canvas usable for video recording
+  stars.onload = () => drawSky();
+  stars.src = TEX + "night-sky.png";
+  function drawSky() {
+    if (!stars.complete || !stars.naturalWidth) return;
+    const dpr = devicePixelRatio || 1, W = sky.clientWidth * dpr, H = sky.clientHeight * dpr;
+    if (sky.width !== W || sky.height !== H) { sky.width = W; sky.height = H; }
+    const ctx = sky.getContext("2d");
+    const scale = Math.max(H / stars.naturalHeight, 1) * 1.2;
+    const tw = stars.naturalWidth * scale, th = stars.naturalHeight * scale;
+    const pov = globe.pointOfView();
+    const shift = ((pov.lng * SKY_PX_PER_DEG * dpr) % tw + tw) % tw;
+    const y = (H - th) / 2 + pov.lat * SKY_PX_PER_DEG * dpr * 0.5;
+    ctx.fillStyle = "#03050a"; ctx.fillRect(0, 0, W, H);
+    for (let x = -shift; x < W; x += tw) ctx.drawImage(stars, x, y, tw, th);
+  }
+  new ResizeObserver(drawSky).observe(sky);
+
+  globe.onZoom(() => { render(); drawSky(); });
 
   return {
     globe,
+    sky,
     maxTileLevel: MAX_TILE_LEVEL,
     setPlaces(next) { places = next; render(true); },
     showMarkers(on) { markersOn = on; render(true); },
